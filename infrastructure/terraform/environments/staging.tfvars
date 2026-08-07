@@ -1,5 +1,5 @@
 environment           = "staging"
-gcp_project_id        = "mizaniya-ai-egypt-staging"
+gcp_project_id        = "mizaniya-ai-staging"
 gcp_region            = "europe-west3"
 firestore_database_id = "mizaniyaai-staging"
 allowed_origins       = "https://mizaniya-staging.mizaniya.ai,https://mizaniya-app-service-ewdtlp2w5n-ew.a.run.app"
