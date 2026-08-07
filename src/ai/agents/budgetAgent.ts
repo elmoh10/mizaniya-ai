@@ -1,5 +1,6 @@
 import { GoogleGenAI, Type } from '@google/genai';
 import { BUDGET_AGENT_PROMPT } from '../prompts';
+import { AI_CONFIG } from '../aiConfig';
 
 export interface BudgetGenerationRequest {
   salary: number;
@@ -15,17 +16,20 @@ export interface BudgetCategoryAllocation {
 }
 
 export interface GeneratedBudgetResult {
-  totalSalary: number;
-  allocatedSavings: number;
-  categories: BudgetCategoryAllocation[];
-  aiAdvice: string;
+  success?: boolean;
+  errorCode?: string;
+  requiresRetry?: boolean;
+  totalSalary?: number;
+  allocatedSavings?: number;
+  categories?: BudgetCategoryAllocation[];
+  aiAdvice?: string;
 }
 
 export async function generateAIBudget(
   ai: GoogleGenAI,
   req: BudgetGenerationRequest
 ): Promise<GeneratedBudgetResult> {
-  const modelName = 'gemini-3.6-flash';
+  const modelName = AI_CONFIG.DEFAULT_MODEL;
 
   const prompt = `
 قم بحساب وبناء ميزانية شهريّة متوازنة في مصر:
@@ -70,26 +74,15 @@ export async function generateAIBudget(
 
     if (response.text) {
       const data = JSON.parse(response.text.trim());
-      return data as GeneratedBudgetResult;
+      return { success: true, ...data };
     }
   } catch (err) {
     console.error('Error generating AI budget:', err);
   }
 
-  // Fallback calculations if API call encounters an error
-  const savings = Math.round((req.salary * req.savingsTargetPercent) / 100);
-  const remaining = req.salary - savings;
-
   return {
-    totalSalary: req.salary,
-    allocatedSavings: savings,
-    categories: [
-      { name: 'الأكل والشوبينج والتموين', amount: Math.round(remaining * 0.45), percentage: 45 },
-      { name: 'الفواتير والكهرباء والإنترنت', amount: Math.round(remaining * 0.20), percentage: 20 },
-      { name: 'الأقساط والمصاريف الثابتة', amount: Math.round(remaining * 0.15), percentage: 15 },
-      { name: 'المواصلات والمشاوير', amount: Math.round(remaining * 0.10), percentage: 10 },
-      { name: 'الترفيه والطوارئ', amount: Math.round(remaining * 0.10), percentage: 10 },
-    ],
-    aiAdvice: 'تم توزيع ميزانيتك تلقائياً للتحوط ضد زيادة الأسعار مع الاهتمام بخصم الادخار أولاً.',
+    success: false,
+    errorCode: 'AI_UNAVAILABLE',
+    requiresRetry: true,
   };
 }

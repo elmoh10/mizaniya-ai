@@ -1,5 +1,6 @@
 import { GoogleGenAI, Type } from '@google/genai';
 import { DEBT_AGENT_PROMPT } from '../prompts';
+import { AI_CONFIG } from '../aiConfig';
 
 export interface InstallmentDebt {
   title: string;
@@ -10,11 +11,14 @@ export interface InstallmentDebt {
 }
 
 export interface DebtStrategyPlan {
-  snowballOrder: string[];
-  recommendedMonthlyPayment: number;
-  totalInterestSavedEstimated: number;
-  monthsToDebtFree: number;
-  actionStepsAr: string[];
+  success?: boolean;
+  errorCode?: string;
+  requiresRetry?: boolean;
+  snowballOrder?: string[];
+  recommendedMonthlyPayment?: number;
+  totalInterestSavedEstimated?: number;
+  monthsToDebtFree?: number;
+  actionStepsAr?: string[];
 }
 
 export async function analyzeDebtStrategy(
@@ -22,7 +26,7 @@ export async function analyzeDebtStrategy(
   debts: InstallmentDebt[],
   monthlySurplus: number
 ): Promise<DebtStrategyPlan> {
-  const modelName = 'gemini-3.6-flash';
+  const modelName = AI_CONFIG.DEFAULT_MODEL;
 
   const prompt = `
 حلل الأقساط والديون التالية وقم بإعداد خطة سداد ذكية في مصر:
@@ -65,20 +69,16 @@ ${JSON.stringify(debts, null, 2)}
     });
 
     if (response.text) {
-      return JSON.parse(response.text.trim()) as DebtStrategyPlan;
+      const parsed = JSON.parse(response.text.trim());
+      return { success: true, ...parsed };
     }
   } catch (err) {
     console.error('Debt Agent Error:', err);
   }
 
   return {
-    snowballOrder: debts.map((d) => d.title),
-    recommendedMonthlyPayment: monthlySurplus,
-    totalInterestSavedEstimated: 3500,
-    monthsToDebtFree: 8,
-    actionStepsAr: [
-      'ركز أولاً على سداد كارت الائتمان الأعلى فائدة قبل أقساط بي تك وبنك مصر.',
-      'خصص أي مكافأة أو دخل إضافي لسداد المبلغ المتبقي من أقساط فاليو ValU.',
-    ],
+    success: false,
+    errorCode: 'AI_UNAVAILABLE',
+    requiresRetry: true,
   };
 }

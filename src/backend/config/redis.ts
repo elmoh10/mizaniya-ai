@@ -15,7 +15,7 @@ if (redisHost) {
     });
 
     redisClient.on('error', (err) => {
-      console.warn('Redis client error (graceful fallback active):', err.message);
+      console.warn('Redis client error:', err.message);
     });
   } catch (e: any) {
     console.warn('Failed to initialize Redis client:', e.message);

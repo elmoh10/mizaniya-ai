@@ -1,0 +1,173 @@
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import fs from 'fs';
+import path from 'path';
+import { analyzeDebtStrategy } from '../../src/ai/agents/debtAgent';
+import { getSavingsHedgeStrategy } from '../../src/ai/agents/savingsAgent';
+import { generateAIBudget } from '../../src/ai/agents/budgetAgent';
+import { detectTransactionFraud } from '../../src/ai/agents/fraudAgent';
+import { rateLimiter } from '../../src/backend/middlewares/rateLimiter';
+import { idempotencyMiddleware } from '../../src/backend/middlewares/idempotencyMiddleware';
+import { routeAgentQuery } from '../../src/ai/supervisor';
+
+describe('P0 Pre-Staging Hardening - Firestore Rules Security Audit', () => {
+  it('verifies that firestore.rules explicitly denies direct client writes for financial subcollections', () => {
+    const rulesPath = path.join(process.cwd(), 'firestore.rules');
+    const rulesContent = fs.readFileSync(rulesPath, 'utf8');
+
+    const financialCollections = [
+      'wallets',
+      'transactions',
+      'budgets',
+      'goals',
+      'bills',
+      'installments',
+    ];
+
+    financialCollections.forEach((col) => {
+      const matchPattern = new RegExp(`match /${col}/\\{[^}]+\\}\\s*\\{[^}]*allow write: if false;`, 's');
+      expect(rulesContent).toMatch(matchPattern);
+    });
+  });
+
+  it('verifies that profile document deletion is denied in firestore.rules', () => {
+    const rulesPath = path.join(process.cwd(), 'firestore.rules');
+    const rulesContent = fs.readFileSync(rulesPath, 'utf8');
+
+    expect(rulesContent).toContain('allow delete: if false;');
+  });
+});
+
+describe('P0 Hardening - AI Agents Error Resilience (No Fabricated Fallbacks)', () => {
+  const failingAiMock: any = {
+    models: {
+      generateContent: vi.fn().mockRejectedValue(new Error('Gemini API quota exceeded')),
+    },
+  };
+
+  it('debtAgent returns AI_UNAVAILABLE error without fabricated interest/months on AI failure', async () => {
+    const result = await analyzeDebtStrategy(failingAiMock, [{
+      title: 'ValU Installment',
+      provider: 'ValU',
+      remainingAmount: 5000,
+      monthlyAmount: 500,
+      interestRate: 0.15,
+    }], 1000);
+
+    expect(result.success).toBe(false);
+    expect(result.errorCode).toBe('AI_UNAVAILABLE');
+    expect(result.requiresRetry).toBe(true);
+    expect((result as any).totalInterestSavedEstimated).toBeUndefined();
+    expect((result as any).monthsToDebtFree).toBeUndefined();
+  });
+
+  it('savingsAgent returns AI_UNAVAILABLE error without fake 60/40 or 28% return on AI failure', async () => {
+    const result = await getSavingsHedgeStrategy(failingAiMock, 2000, 3850);
+
+    expect(result.success).toBe(false);
+    expect(result.errorCode).toBe('AI_UNAVAILABLE');
+    expect(result.requiresRetry).toBe(true);
+    expect((result as any).recommendedAllocationGoldPercent).toBeUndefined();
+    expect((result as any).expectedAnnualHedgePercent).toBeUndefined();
+  });
+
+  it('budgetAgent returns AI_UNAVAILABLE error on AI failure', async () => {
+    const result = await generateAIBudget(failingAiMock, { salary: 15000, savingsTargetPercent: 20 });
+
+    expect(result.success).toBe(false);
+    expect(result.errorCode).toBe('AI_UNAVAILABLE');
+    expect(result.requiresRetry).toBe(true);
+  });
+
+  it('fraudAgent returns AI_UNAVAILABLE error on AI failure', async () => {
+    const result = await detectTransactionFraud(failingAiMock, {
+      amount: 1000,
+      merchant: 'Jumia',
+      category: 'Shopping',
+      time: '12:00',
+      walletType: 'Credit Card',
+      avgCategorySpend: 200,
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.errorCode).toBe('AI_UNAVAILABLE');
+    expect(result.requiresRetry).toBe(true);
+  });
+});
+
+describe('P0 Hardening - Redis & Rate Limiter / Idempotency Failures in Production', () => {
+  const originalEnv = process.env.NODE_ENV;
+
+  beforeEach(() => {
+    process.env.NODE_ENV = 'production';
+  });
+
+  afterEach(() => {
+    process.env.NODE_ENV = originalEnv;
+  });
+
+  it('rateLimiter returns 503 SERVICE_UNAVAILABLE when Redis is missing in production', async () => {
+    const middleware = rateLimiter(60, 60000, 'api');
+    const req: any = { ip: '127.0.0.1', header: () => null };
+    const res: any = {
+      status: vi.fn().mockReturnThis(),
+      json: vi.fn(),
+    };
+    const next = vi.fn();
+
+    await middleware(req, res, next);
+
+    expect(res.status).toHaveBeenCalledWith(503);
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
+      error: 'SERVICE_UNAVAILABLE',
+    }));
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it('idempotencyMiddleware returns 503 SERVICE_UNAVAILABLE when Redis is missing in production and header is set', async () => {
+    const req: any = {
+      header: (name: string) => (name.toLowerCase() === 'idempotency-key' ? 'test-key-123' : null),
+      path: '/api/v1/transactions',
+      user: { uid: 'user_prod_1' },
+    };
+    const res: any = {
+      status: vi.fn().mockReturnThis(),
+      json: vi.fn(),
+    };
+    const next = vi.fn();
+
+    await idempotencyMiddleware(req, res, next);
+
+    expect(res.status).toHaveBeenCalledWith(503);
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
+      error: 'SERVICE_UNAVAILABLE',
+    }));
+    expect(next).not.toHaveBeenCalled();
+  });
+});
+
+describe('P0 Hardening - Deployment & Storage Static Guardrails', () => {
+  it('does not let main Terraform create the existing Firestore database', () => {
+    const tf = fs.readFileSync(path.join(process.cwd(), 'infrastructure/terraform/main.tf'), 'utf8');
+    expect(tf).not.toContain('resource "google_firestore_database"');
+  });
+
+  it('runs Cloud Run with NODE_ENV=production and APP_ENV supplied separately', () => {
+    const tf = fs.readFileSync(path.join(process.cwd(), 'infrastructure/terraform/main.tf'), 'utf8');
+    expect(tf).toMatch(/name\s*=\s*"NODE_ENV"[\s\S]*?value\s*=\s*"production"/);
+    expect(tf).toMatch(/name\s*=\s*"APP_ENV"[\s\S]*?value\s*=\s*var\.environment/);
+  });
+
+  it('requires remote Terraform state in CI and has no local-state fallback', () => {
+    const workflow = fs.readFileSync(path.join(process.cwd(), '.github/workflows/deploy.yml'), 'utf8');
+    expect(workflow).toContain('TFSTATE_BUCKET: mizaniya-ai-staging-tfstate');
+    expect(workflow).not.toContain('terraform init -backend=false');
+  });
+
+  it('hardens receipt and voice upload storage rules', () => {
+    const rules = fs.readFileSync(path.join(process.cwd(), 'storage.rules'), 'utf8');
+    expect(rules).toContain('request.resource.size <= 5 * 1024 * 1024');
+    expect(rules).toContain("contentType.matches('image/(jpeg|png|webp)')");
+    expect(rules).toContain('request.resource.size <= 15 * 1024 * 1024');
+    expect(rules).toContain("contentType.matches('audio/(mpeg|mp4|m4a|wav|x-wav|webm|ogg)')");
+  });
+});

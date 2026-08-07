@@ -1,4 +1,5 @@
 import { GoogleGenAI, Type } from '@google/genai';
+import { AI_CONFIG } from '../../ai/aiConfig';
 
 export interface VoiceExpenseParseResult {
   success: boolean;
@@ -48,7 +49,7 @@ export async function parseVoiceCommandExpense(
 
   try {
     const response = await ai.models.generateContent({
-      model: 'gemini-3.6-flash',
+      model: AI_CONFIG.DEFAULT_MODEL,
       contents: prompt,
       config: {
         responseMimeType: 'application/json',

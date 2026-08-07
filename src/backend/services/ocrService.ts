@@ -1,4 +1,5 @@
 import { GoogleGenAI, Type } from '@google/genai';
+import { AI_CONFIG } from '../../ai/aiConfig';
 
 export interface ParsedReceiptData {
   success: boolean;
@@ -14,10 +15,48 @@ export interface ParsedReceiptData {
   errorDetails?: string;
 }
 
+const ALLOWED_MIME_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
+const MAX_FILE_SIZE_BYTES = 5 * 1024 * 1024; // 5MB limit
+
 export async function parseReceiptImageWithGemini(
   base64Image: string,
   mimeType: string = 'image/jpeg'
 ): Promise<ParsedReceiptData> {
+  const normalizedMime = (mimeType || 'image/jpeg').toLowerCase().trim();
+
+  // 1. Validate MIME type
+  if (!ALLOWED_MIME_TYPES.includes(normalizedMime)) {
+    return {
+      success: false,
+      errorCode: 'INVALID_MIME_TYPE',
+      requiresManualEntry: true,
+      errorDetails: `Unsupported file type '${mimeType}'. Allowed types are: image/jpeg, image/png, image/webp.`,
+    };
+  }
+
+  // 2. Validate payload presence
+  if (!base64Image || typeof base64Image !== 'string' || base64Image.trim().length === 0) {
+    return {
+      success: false,
+      errorCode: 'INVALID_BASE64_PAYLOAD',
+      requiresManualEntry: true,
+      errorDetails: 'Empty or missing image data payload.',
+    };
+  }
+
+  // 3. Estimate size (base64 size ~ 4/3 of binary size)
+  const cleanBase64 = base64Image.replace(/^data:image\/\w+;base64,/, '').trim();
+  const estimatedSizeBytes = Math.ceil((cleanBase64.length * 3) / 4);
+
+  if (estimatedSizeBytes > MAX_FILE_SIZE_BYTES) {
+    return {
+      success: false,
+      errorCode: 'FILE_TOO_LARGE',
+      requiresManualEntry: true,
+      errorDetails: `File size (${(estimatedSizeBytes / (1024 * 1024)).toFixed(2)}MB) exceeds maximum allowed limit of 5MB.`,
+    };
+  }
+
   const apiKey = process.env.GEMINI_API_KEY;
 
   if (!apiKey) {
@@ -48,10 +87,10 @@ export async function parseReceiptImageWithGemini(
 
   try {
     const response = await ai.models.generateContent({
-      model: 'gemini-3.6-flash',
+      model: AI_CONFIG.DEFAULT_MODEL,
       contents: {
         parts: [
-          { inlineData: { data: base64Image, mimeType } },
+          { inlineData: { data: cleanBase64, mimeType: normalizedMime } },
           { text: prompt },
         ],
       },

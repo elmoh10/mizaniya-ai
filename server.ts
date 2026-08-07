@@ -27,22 +27,26 @@ const allowedOrigins = process.env.ALLOWED_ORIGINS
   ? process.env.ALLOWED_ORIGINS.split(',').map((o) => o.trim())
   : ['http://localhost:3000', 'http://127.0.0.1:3000'];
 
-app.use(
-  cors({
+// Apply CORS per request so the deployed Cloud Run service can safely allow
+// its own origin before a custom staging domain exists.
+app.use((req, res, next) => {
+  const requestOrigin = `${req.protocol}://${req.get('host')}`;
+  return cors({
     origin: (origin, callback) => {
-      // Allow requests with no origin (mobile apps, curl, postman)
+      // Allow non-browser clients (curl, mobile apps, server-to-server).
       if (!origin) return callback(null, true);
       if (process.env.NODE_ENV !== 'production') return callback(null, true);
 
-      if (allowedOrigins.indexOf(origin) !== -1 || allowedOrigins.includes('*')) {
-        callback(null, true);
-      } else {
-        callback(new Error(`CORS blocked for origin: ${origin}`));
+      const validOrigins = allowedOrigins.filter((o) => o && o !== '*');
+      if (origin === requestOrigin || validOrigins.includes(origin)) {
+        return callback(null, true);
       }
+
+      return callback(new Error(`CORS blocked for origin: ${origin}`));
     },
     credentials: true,
-  })
-);
+  })(req, res, next);
+});
 
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
@@ -57,7 +61,7 @@ app.get('/health', (req, res) => {
     system: 'Mizaniya AI',
     version: process.env.APP_VERSION || 'v6.3',
     gitSha: process.env.GIT_SHA || 'development',
-    environment: process.env.NODE_ENV || 'development',
+    environment: process.env.APP_ENV || process.env.NODE_ENV || 'development',
     timestamp: new Date().toISOString(),
     uptime: process.uptime(),
     memoryUsage: process.memoryUsage(),

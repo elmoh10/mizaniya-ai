@@ -5,7 +5,7 @@ let pubsubClient: PubSub | null = null;
 try {
   if (process.env.GCP_PROJECT || process.env.PUBSUB_EMULATOR_HOST) {
     pubsubClient = new PubSub({
-      projectId: process.env.GCP_PROJECT || 'mizaniya-ai-egypt-prod',
+      projectId: process.env.GCP_PROJECT,
     });
   }
 } catch (e: any) {

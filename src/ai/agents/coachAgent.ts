@@ -1,5 +1,6 @@
 import { GoogleGenAI } from '@google/genai';
 import { EGYPTIAN_FINANCIAL_COACH_PROMPT } from '../prompts';
+import { AI_CONFIG } from '../aiConfig';
 
 export interface ChatMessage {
   role: 'user' | 'model';
@@ -12,7 +13,7 @@ export async function askFinancialCoach(
   chatHistory: ChatMessage[] = [],
   contextData?: Record<string, any>
 ): Promise<string> {
-  const modelName = 'gemini-3.6-flash';
+  const modelName = AI_CONFIG.DEFAULT_MODEL;
 
   const bankText = contextData?.bank ? contextData.bank : 'غير محدد (غير متاح البيانات)';
   const contextPrompt = contextData
@@ -36,13 +37,12 @@ export async function askFinancialCoach(
       contents,
       config: {
         systemInstruction: EGYPTIAN_FINANCIAL_COACH_PROMPT,
-        temperature: 0.7,
       },
     });
 
     return response.text || 'عذراً، حدث خطأ أثناء معالجة طلبك مع الكوتش المالي.';
   } catch (err) {
     console.error('Coach Agent Error:', err);
-    return 'الكوتش المالي مش قادر يتصل بالسيرفر حالياً، جرب تاني بعد لحظات!';
+    return 'خدمة الذكاء الاصطناعي غير متاحة حالياً، يرجى إعادة المحاولة لاحقاً.';
   }
 }

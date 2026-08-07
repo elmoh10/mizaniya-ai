@@ -1,24 +1,29 @@
 import { GoogleGenAI, Type } from '@google/genai';
 import { SAVINGS_AGENT_PROMPT } from '../prompts';
+import { AI_CONFIG } from '../aiConfig';
 
 export interface GoldSavingsAdvice {
-  recommendedAllocationGoldPercent: number;
-  recommendedCertificatesPercent: number;
-  goldGramsToBuy: number;
-  expectedAnnualHedgePercent: number;
-  adviceSummaryAr: string;
+  success?: boolean;
+  errorCode?: string;
+  requiresRetry?: boolean;
+  recommendedAllocationGoldPercent?: number;
+  recommendedCertificatesPercent?: number;
+  goldGramsToBuy?: number;
+  expectedAnnualHedgePercent?: number;
+  adviceSummaryAr?: string;
 }
 
 export async function getSavingsHedgeStrategy(
   ai: GoogleGenAI,
   monthlySavingsAmount: number,
-  goldGramPriceEgp: number = 3850
+  goldGramPriceEgp?: number
 ): Promise<GoldSavingsAdvice> {
-  const modelName = 'gemini-3.6-flash';
+  const modelName = AI_CONFIG.DEFAULT_MODEL;
+
+  const goldPriceInfo = goldGramPriceEgp ? `\n• سعر جرام الذهب عيار 21 اليوم: ${goldGramPriceEgp} ج.م` : '';
 
   const prompt = `
-احسب أفضل توزيع لحفظ القوة الشرائية لمبلغ الادخار الشهري (${monthlySavingsAmount} ج.م) في مصر:
-• سعر جرام الذهب عيار 21 المتوقع اليوم: ${goldGramPriceEgp} ج.م
+احسب أفضل توزيع لحفظ القوة الشرائية لمبلغ الادخار الشهري (${monthlySavingsAmount} ج.م) في مصر:${goldPriceInfo}
 `;
 
   try {
@@ -49,20 +54,16 @@ export async function getSavingsHedgeStrategy(
     });
 
     if (response.text) {
-      return JSON.parse(response.text.trim()) as GoldSavingsAdvice;
+      const parsed = JSON.parse(response.text.trim());
+      return { success: true, ...parsed };
     }
   } catch (err) {
     console.error('Savings Agent Error:', err);
   }
 
-  const goldAlloc = Math.round(monthlySavingsAmount * 0.6);
-  const grams = Math.round((goldAlloc / goldGramPriceEgp) * 100) / 100;
-
   return {
-    recommendedAllocationGoldPercent: 60,
-    recommendedCertificatesPercent: 40,
-    goldGramsToBuy: grams,
-    expectedAnnualHedgePercent: 28,
-    adviceSummaryAr: `يُنصح بوضع 60% من الفائض الشهري في شراء سبائك ذهب (حوالي ${grams} جرام شهرياً)، والـ 40% المتبقية في أوعية توفير يومية عالية العائد لمواجهة التضخم.`,
+    success: false,
+    errorCode: 'AI_UNAVAILABLE',
+    requiresRetry: true,
   };
 }

@@ -27,46 +27,55 @@ service cloud.firestore {
 
     function doesNotModifyPrivilegedFields() {
       return !request.resource.data.diff(resource.data).affectedKeys()
-        .hasAny(['role', 'admin', 'subscriptionTier', 'billingStatus', 'adminFlags', 'securityFlags']);
+        .hasAny(['role', 'admin', 'subscriptionTier', 'billingStatus', 'adminFlags', 'securityFlags', 'financialHealthResults']);
     }
 
     // User Profile Collection
     match /users/{userId} {
       allow read: if isOwner(userId);
-      allow create: if isOwner(userId) && !request.resource.data.keys().hasAny(['role', 'admin', 'subscriptionTier', 'billingStatus', 'adminFlags', 'securityFlags']);
+      allow create: if isOwner(userId) && !request.resource.data.keys().hasAny(['role', 'admin', 'subscriptionTier', 'billingStatus', 'adminFlags', 'securityFlags', 'financialHealthResults']);
       allow update: if isOwner(userId) && (resource == null || doesNotModifyPrivilegedFields());
       allow delete: if false; // User deletion MUST occur via backend API workflow
 
+      // Sensitive financial subcollections - Server-Only Write Enforcement
       match /wallets/{walletId} {
-        allow read, write: if isOwner(userId);
+        allow read: if isOwner(userId);
+        allow write: if false; // Must use authenticated backend API
       }
 
       match /transactions/{txId} {
-        allow read, write: if isOwner(userId);
+        allow read: if isOwner(userId);
+        allow write: if false; // Must use authenticated backend API
       }
 
       match /budgets/{budgetId} {
-        allow read, write: if isOwner(userId);
+        allow read: if isOwner(userId);
+        allow write: if false; // Must use authenticated backend API
       }
 
       match /goals/{goalId} {
-        allow read, write: if isOwner(userId);
+        allow read: if isOwner(userId);
+        allow write: if false; // Must use authenticated backend API
       }
 
       match /bills/{billId} {
-        allow read, write: if isOwner(userId);
+        allow read: if isOwner(userId);
+        allow write: if false; // Must use authenticated backend API
       }
 
       match /installments/{installmentId} {
-        allow read, write: if isOwner(userId);
+        allow read: if isOwner(userId);
+        allow write: if false; // Must use authenticated backend API
       }
 
       match /memory/{memoryId} {
-        allow read, write: if isOwner(userId);
+        allow read: if isOwner(userId);
+        allow write: if false; // Must use authenticated backend API
       }
 
       match /ai_memories/{memoryId} {
-        allow read, write: if isOwner(userId);
+        allow read: if isOwner(userId);
+        allow write: if false; // Must use authenticated backend API
       }
     }
 

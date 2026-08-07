@@ -1,4 +1,5 @@
 import React from 'react';
+import { AI_CONFIG } from '../ai/aiConfig';
 import {
   LayoutDashboard,
   Receipt,
@@ -152,7 +153,7 @@ export const Navigation: React.FC<NavigationProps> = ({
               </span>
             </div>
             <p className="text-[11px]">
-              {isAr ? 'متصل بـ Gemini 2.5 Flash' : 'Connected to Gemini 2.5'}
+              {isAr ? AI_CONFIG.MODEL_DISPLAY_NAME_AR : `Connected to ${AI_CONFIG.MODEL_DISPLAY_NAME}`}
             </p>
           </div>
         </div>

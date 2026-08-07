@@ -46,8 +46,8 @@ export async function routeAgentQuery(req: SupervisorRequest): Promise<any> {
     }
 
     case 'debt_plan': {
-      const unpaidBills = context?.unpaidBills || [];
-      if (unpaidBills.length === 0) {
+      const activeInstallments = context?.activeInstallments || [];
+      if (activeInstallments.length === 0) {
         return {
           status: 'NEEDS_USER_DATA',
           message: 'لا توجد ديون أو أقساط مسجلة لحساب خطة السداد.',
@@ -55,12 +55,12 @@ export async function routeAgentQuery(req: SupervisorRequest): Promise<any> {
         };
       }
 
-      const debtsForAgent: InstallmentDebt[] = unpaidBills.map((b) => ({
-        title: b.titleAr || b.title,
-        provider: b.biller || 'مورد محلي',
-        remainingAmount: b.amount,
-        monthlyAmount: b.amount,
-        interestRate: 0,
+      const debtsForAgent: InstallmentDebt[] = activeInstallments.map((inst) => ({
+        title: inst.titleAr || inst.title,
+        provider: inst.provider || 'بنك / جهة تمويل',
+        remainingAmount: inst.remainingAmount,
+        monthlyAmount: inst.monthlyPayment || 0,
+        interestRate: inst.interestRate || 0,
       }));
 
       return await analyzeDebtStrategy(
