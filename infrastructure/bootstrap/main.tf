@@ -13,7 +13,7 @@ terraform {
 
 variable "staging_project_id" {
   type        = string
-  default     = "mizaniya-ai-egypt-staging"
+  default     = "mizaniya-ai-staging"
   description = "GCP Project ID for Staging environment"
 }
 
