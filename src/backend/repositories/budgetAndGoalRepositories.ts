@@ -1,5 +1,5 @@
 import { db } from '../config/firebaseAdmin';
-import { Budget, Goal, Bill } from '../../types';
+import { Budget, Goal, Bill, Subscription } from '../../types';
 
 export class BudgetRepository {
   private getCollection(userId: string) {
@@ -67,6 +67,24 @@ export class BillRepository {
   }
 }
 
+export class SubscriptionRepository {
+  private getCollection(userId: string) {
+    return db.collection('users').doc(userId).collection('subscriptions');
+  }
+
+  async getSubscriptions(userId: string): Promise<Subscription[]> {
+    const snapshot = await this.getCollection(userId).get();
+    return snapshot.docs.map((doc) => doc.data() as Subscription);
+  }
+
+  async saveSubscription(userId: string, sub: Subscription): Promise<Subscription> {
+    const docRef = sub.id ? this.getCollection(userId).doc(sub.id) : this.getCollection(userId).doc();
+    const newSub = { ...sub, id: docRef.id };
+    await docRef.set(newSub, { merge: true });
+    return newSub;
+  }
+}
+
 export class AIMemoryRepository {
   private getCollection(userId: string) {
     return db.collection('users').doc(userId).collection('ai_memories');
@@ -88,4 +106,5 @@ export class AIMemoryRepository {
 export const budgetRepository = new BudgetRepository();
 export const goalRepository = new GoalRepository();
 export const billRepository = new BillRepository();
+export const subscriptionRepository = new SubscriptionRepository();
 export const aiMemoryRepository = new AIMemoryRepository();

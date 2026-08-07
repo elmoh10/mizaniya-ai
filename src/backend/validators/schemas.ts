@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 export const aiChatSchema = z.object({
-  message: z.string().min(1, 'Message cannot be empty'),
+  message: z.string().trim().min(1, 'Message cannot be empty'),
   intent: z
     .enum(['coach_chat', 'auto_budget', 'debt_plan', 'fraud_check', 'savings_hedge'])
     .optional()
@@ -113,26 +113,29 @@ export const budgetSetSchema = z.object({
 
 export const goalCreateSchema = z.object({
   id: z.string().optional(),
-  title: z.string().min(1),
-  titleAr: z.string().min(1),
-  targetAmount: z.number().positive(),
+  title: z.string().min(1, 'اسم الهدف مطلوب'),
+  titleAr: z.string().optional(),
+  targetAmount: z.number().positive('مبلغ الهدف يجب أن يكون أكبر من 0'),
   currentAmount: z.number().nonnegative().default(0),
-  targetDate: z.string(),
+  targetDate: z.string().default(() => new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]),
   category: z.string().default('general'),
   icon: z.string().default('Target'),
   color: z.string().default('bg-blue-500'),
   monthlyTarget: z.number().nonnegative().default(0),
   riskLevel: z.enum(['Low', 'Medium', 'High']).default('Medium'),
   successProbability: z.number().min(0).max(100).default(80),
-});
+}).transform((data) => ({
+  ...data,
+  titleAr: data.titleAr || data.title,
+}));
 
 export const billCreateSchema = z.object({
   id: z.string().optional(),
-  title: z.string().min(1),
-  titleAr: z.string().min(1),
-  biller: z.string().min(1),
-  amount: z.number().positive(),
-  dueDate: z.string(),
+  title: z.string().min(1, 'عنوان الفاتورة مطلوب'),
+  titleAr: z.string().optional(),
+  biller: z.string().default('جهات المرافق'),
+  amount: z.number().positive('مبلغ الفاتورة يجب أن يكون أكبر من 0'),
+  dueDate: z.string().default(() => new Date().toISOString().split('T')[0]),
   isPaid: z.boolean().default(false),
   paymentMethod: z.enum([
     'InstaPay',
@@ -147,6 +150,46 @@ export const billCreateSchema = z.object({
   fawryCode: z.string().optional(),
   icon: z.string().default('Zap'),
   urgency: z.enum(['high', 'medium', 'low']).default('medium'),
+  notes: z.string().optional(),
+}).transform((data) => ({
+  ...data,
+  titleAr: data.titleAr || data.title,
+}));
+
+export const subscriptionCreateSchema = z.object({
+  id: z.string().optional(),
+  name: z.string().min(1, 'اسم الاشتراك مطلوب'),
+  provider: z.string().default('خدمة رقمية'),
+  amount: z.number().positive('مبلغ الاشتراك يجب أن يكون أكبر من 0'),
+  currency: z.enum(['EGP', 'USD', 'SAR', 'EUR']).default('EGP'),
+  cycle: z.enum(['monthly', 'yearly']).default('monthly'),
+  nextDueDate: z.string().default(() => new Date().toISOString().split('T')[0]),
+  paymentMethod: z.enum([
+    'InstaPay',
+    'Vodafone Cash',
+    'CIB Bank',
+    'Fawry',
+    'Cash',
+    'Visa/Mastercard',
+    'Valu',
+    'B.TECH / Aman',
+  ]).default('Visa/Mastercard'),
+  category: z.enum([
+    'Food & Groceries',
+    'Housing & Utilities',
+    'Bills & Subscriptions',
+    'Transport & Ride Apps',
+    'Installments & Debt',
+    'Health & Education',
+    'Family & Allowances',
+    'Shopping & Entertainment',
+    'Emergency & Savings',
+    'Income & Salary',
+  ]).default('Bills & Subscriptions'),
+  autoPay: z.boolean().default(true),
+  icon: z.string().default('Tv'),
+  status: z.enum(['active', 'paused', 'cancelled']).default('active'),
+  notes: z.string().optional(),
 });
 
 export const installmentCreateSchema = z.object({
