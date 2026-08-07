@@ -19,14 +19,14 @@ export const voiceCommandSchema = z.object({
 });
 
 export const walletCreateSchema = z.object({
-  name: z.string().min(1),
-  nameAr: z.string().default('محفظة جديدة'),
-  type: z.enum(['bank', 'wallet', 'cash', 'credit']),
+  name: z.string().min(1, 'اسم المحفظة مطلوب'),
+  nameAr: z.string().optional().default('محفظة جديدة'),
+  type: z.enum(['cash', 'bank', 'card', 'savings', 'wallet', 'credit']),
   balance: z.number().default(0),
   currency: z.enum(['EGP', 'USD', 'SAR', 'EUR']).default('EGP'),
   accountNumber: z.string().optional(),
-  icon: z.string().default('Wallet'),
-  color: z.string().default('bg-blue-600'),
+  icon: z.string().optional().default('Wallet'),
+  color: z.string().optional().default('bg-emerald-600'),
   isPrimary: z.boolean().optional(),
 });
 

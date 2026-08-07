@@ -12,9 +12,11 @@ import { FamilyView } from './components/FamilyView';
 import { ReportsView } from './components/ReportsView';
 import { AdminView } from './components/AdminView';
 import { WidgetsView } from './components/WidgetsView';
+import { WalletsView } from './components/WalletsView';
+import { ProfileView } from './components/ProfileView';
 import { AuthView } from './components/AuthView';
 
-import { auth, onAuthStateChanged, User } from './config/firebaseClient';
+import { auth, onAuthStateChanged, firebaseSignOut, User } from './config/firebaseClient';
 import { apiClient } from './services/apiClient';
 import { Wallet, Transaction, Budget, Goal, Bill, Subscription, HealthScoreBreakdown, InsightTimelineItem } from './types';
 import { AlertCircle, RefreshCw } from 'lucide-react';
@@ -178,6 +180,36 @@ export function App() {
     }
   };
 
+  // Handle Logout
+  const handleLogout = async () => {
+    try {
+      await firebaseSignOut(auth);
+      setUser(null);
+      setUserRole('user');
+      setWallets([]);
+      setTransactions([]);
+      setBudget({
+        id: new Date().toISOString().slice(0, 7),
+        monthKey: new Date().toISOString().slice(0, 7),
+        month: new Date().toLocaleString('ar-EG', { month: 'long' }),
+        year: new Date().getFullYear(),
+        totalIncome: 0,
+        totalSalary: 0,
+        targetSavingsPercent: 20,
+        savingsTargetPercent: 20,
+        allocatedSavings: 0,
+        categories: [],
+      });
+      setGoals([]);
+      setBills([]);
+      setHealthScore(null);
+      setDataError(null);
+      setActiveTab('dashboard');
+    } catch (err) {
+      console.error('Logout error:', err);
+    }
+  };
+
   if (loadingAuth) {
     return (
       <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center p-4 text-white">
@@ -205,6 +237,10 @@ export function App() {
         onOpenVoice={() => setActiveTab('transactions')}
         unreadAlertsCount={0}
         isAdmin={userRole === 'admin'}
+        userEmail={user.email || undefined}
+        userName={user.displayName || undefined}
+        onOpenProfile={() => setActiveTab('profile')}
+        onLogout={handleLogout}
       />
 
       {/* Main Container Layout */}
@@ -259,6 +295,22 @@ export function App() {
                   wallets={wallets}
                   onAddTransaction={handleAddTransaction}
                   lang={lang}
+                />
+              )}
+
+              {activeTab === 'wallets' && (
+                <WalletsView
+                  wallets={wallets}
+                  onRefreshWallets={loadAppData}
+                  lang={lang}
+                />
+              )}
+
+              {activeTab === 'profile' && (
+                <ProfileView
+                  userEmail={user.email || ''}
+                  lang={lang}
+                  onProfileUpdated={loadAppData}
                 />
               )}
 

@@ -27,32 +27,29 @@ const allowedOrigins = process.env.ALLOWED_ORIGINS
   ? process.env.ALLOWED_ORIGINS.split(',').map((o) => o.trim())
   : ['http://localhost:3000', 'http://127.0.0.1:3000'];
 
-// Apply CORS per request so the deployed Cloud Run service can safely allow
-// its own origin before a custom staging domain exists.
-app.use((req, res, next) => {
-  const requestOrigin = `${req.protocol}://${req.get('host')}`;
-  return cors({
-    origin: (origin, callback) => {
-      // Allow non-browser clients (curl, mobile apps, server-to-server).
-      if (!origin) return callback(null, true);
-      if (process.env.NODE_ENV !== 'production') return callback(null, true);
+const apiCors = cors({
+  origin: (origin, callback) => {
+    // Allow requests with no origin (mobile apps, curl, postman)
+    if (!origin) return callback(null, true);
+    if (process.env.NODE_ENV !== 'production') return callback(null, true);
 
-      const validOrigins = allowedOrigins.filter((o) => o && o !== '*');
-      if (origin === requestOrigin || validOrigins.includes(origin)) {
-        return callback(null, true);
-      }
-
-      return callback(new Error(`CORS blocked for origin: ${origin}`));
-    },
-    credentials: true,
-  })(req, res, next);
+    // In production/staging, strict origin checking against ALLOWED_ORIGINS.
+    const validOrigins = allowedOrigins.filter((o) => o !== '*');
+    if (validOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error(`CORS blocked for origin: ${origin}`));
+    }
+  },
+  credentials: true,
 });
 
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-// Mount Core API Router (v1 API Versioning)
-app.use('/api/v1', apiRoutes);
+// Mount Core API Router (v1 API Versioning). CORS is scoped to API traffic
+// so frontend static assets can never be blocked by the API allowlist.
+app.use('/api/v1', apiCors, apiRoutes);
 
 // Health check endpoint
 app.get('/health', (req, res) => {
@@ -61,7 +58,7 @@ app.get('/health', (req, res) => {
     system: 'Mizaniya AI',
     version: process.env.APP_VERSION || 'v6.3',
     gitSha: process.env.GIT_SHA || 'development',
-    environment: process.env.APP_ENV || process.env.NODE_ENV || 'development',
+    environment: process.env.NODE_ENV || 'development',
     timestamp: new Date().toISOString(),
     uptime: process.uptime(),
     memoryUsage: process.memoryUsage(),

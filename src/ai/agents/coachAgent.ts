@@ -37,6 +37,7 @@ export async function askFinancialCoach(
       contents,
       config: {
         systemInstruction: EGYPTIAN_FINANCIAL_COACH_PROMPT,
+        temperature: 0.7,
       },
     });
 

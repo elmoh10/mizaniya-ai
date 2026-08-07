@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
   Bot,
   AlertOctagon,
@@ -8,6 +8,9 @@ import {
   Sliders,
   Volume2,
   Bell,
+  User as UserIcon,
+  LogOut,
+  ChevronDown,
 } from 'lucide-react';
 
 interface HeaderProps {
@@ -21,6 +24,10 @@ interface HeaderProps {
   onOpenVoice: () => void;
   unreadAlertsCount: number;
   isAdmin?: boolean;
+  userEmail?: string;
+  userName?: string;
+  onOpenProfile?: () => void;
+  onLogout?: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -34,8 +41,13 @@ export const Header: React.FC<HeaderProps> = ({
   onOpenVoice,
   unreadAlertsCount,
   isAdmin = false,
+  userEmail,
+  userName,
+  onOpenProfile,
+  onLogout,
 }) => {
   const isAr = lang === 'ar';
+  const [showUserMenu, setShowUserMenu] = useState(false);
 
   return (
     <header className="sticky top-0 z-40 bg-white/90 dark:bg-slate-900/90 backdrop-blur-md border-b border-slate-200 dark:border-slate-800 transition-colors">
@@ -167,6 +179,55 @@ export const Header: React.FC<HeaderProps> = ({
               <Moon className="w-4 h-4 text-slate-600" />
             )}
           </button>
+
+          {/* User Profile Dropdown */}
+          <div className="relative">
+            <button
+              onClick={() => setShowUserMenu(!showUserMenu)}
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-emerald-50 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-200 border border-emerald-200 dark:border-emerald-800/80 text-xs font-bold hover:bg-emerald-100 dark:hover:bg-emerald-900/60 transition"
+            >
+              <div className="w-6 h-6 rounded-full bg-emerald-600 text-white flex items-center justify-center font-black text-[11px]">
+                {userName ? userName.charAt(0).toUpperCase() : userEmail ? userEmail.charAt(0).toUpperCase() : 'U'}
+              </div>
+              <span className="hidden sm:inline max-w-[100px] truncate">{userName || userEmail || (isAr ? 'حسابي' : 'Account')}</span>
+              <ChevronDown className="w-3.5 h-3.5 text-emerald-600" />
+            </button>
+
+            {showUserMenu && (
+              <div className="absolute left-0 sm:right-0 sm:left-auto mt-2 w-56 bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-800 p-2 z-50 text-xs space-y-1">
+                {userEmail && (
+                  <div className="px-3 py-2 border-b border-slate-100 dark:border-slate-800">
+                    <p className="text-[10px] text-slate-400 font-medium">{isAr ? 'مسجل كـ' : 'Signed in as'}</p>
+                    <p className="font-bold text-slate-800 dark:text-slate-200 truncate">{userEmail}</p>
+                  </div>
+                )}
+
+                <button
+                  onClick={() => {
+                    setShowUserMenu(false);
+                    if (onOpenProfile) onOpenProfile();
+                  }}
+                  className="w-full flex items-center gap-2 px-3 py-2 rounded-xl text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 font-medium transition"
+                >
+                  <UserIcon className="w-4 h-4 text-emerald-600" />
+                  <span>{isAr ? 'الملف الشخصي' : 'Profile'}</span>
+                </button>
+
+                {onLogout && (
+                  <button
+                    onClick={() => {
+                      setShowUserMenu(false);
+                      onLogout();
+                    }}
+                    className="w-full flex items-center gap-2 px-3 py-2 rounded-xl text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40 font-bold transition"
+                  >
+                    <LogOut className="w-4 h-4" />
+                    <span>{isAr ? 'تسجيل الخروج' : 'Logout'}</span>
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
         </div>
       </div>
     </header>

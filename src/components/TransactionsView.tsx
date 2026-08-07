@@ -45,6 +45,7 @@ export const TransactionsView: React.FC<TransactionsViewProps> = ({
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('InstaPay');
   const [merchant, setMerchant] = useState('');
   const [notes, setNotes] = useState('');
+  const [submitError, setSubmitError] = useState<string | null>(null);
 
   // Voice State
   const [voiceText, setVoiceText] = useState('');
@@ -61,31 +62,50 @@ export const TransactionsView: React.FC<TransactionsViewProps> = ({
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
 
+  React.useEffect(() => {
+    if (wallets && wallets.length > 0) {
+      if (!walletId || wallets.length === 1 || !wallets.some((w) => w.id === walletId)) {
+        setWalletId(wallets[0].id);
+      }
+    }
+  }, [wallets, walletId]);
+
   // Handle Manual Submission
   const handleSubmitManual = async (e: React.FormEvent) => {
     e.preventDefault();
+    setSubmitError(null);
     if (!amount || parseFloat(amount) <= 0) return;
 
-    await onAddTransaction({
-      title: title || (isAr ? 'معاملة مالية جديدة' : 'New Transaction'),
-      amount: parseFloat(amount),
-      currency: 'EGP',
-      type,
-      category,
-      walletId: walletId || wallets[0]?.id || '',
-      paymentMethod,
-      date: new Date().toISOString().split('T')[0],
-      merchant: merchant || undefined,
-      notes: notes || undefined,
-      aiTag: isAr ? 'معاملة يدوية' : 'Manual Entry',
-    });
+    const targetWalletId = walletId || wallets[0]?.id;
+    if (!targetWalletId) {
+      setSubmitError(isAr ? 'يرجى إنشاء محفظة مالية أولاً من قسم المحافظ قبل تسجيل المعاملة.' : 'Please create a wallet first.');
+      return;
+    }
 
-    // Reset
-    setTitle('');
-    setAmount('');
-    setMerchant('');
-    setNotes('');
-    setShowAddModal(false);
+    try {
+      await onAddTransaction({
+        title: title || (isAr ? 'معاملة مالية جديدة' : 'New Transaction'),
+        amount: parseFloat(amount),
+        currency: 'EGP',
+        type,
+        category,
+        walletId: targetWalletId,
+        paymentMethod,
+        date: new Date().toISOString().split('T')[0],
+        merchant: merchant || undefined,
+        notes: notes || undefined,
+        aiTag: isAr ? 'معاملة يدوية' : 'Manual Entry',
+      });
+
+      // Reset
+      setTitle('');
+      setAmount('');
+      setMerchant('');
+      setNotes('');
+      setShowAddModal(false);
+    } catch (err: any) {
+      setSubmitError(err.message || (isAr ? 'فشلت عملية إضافة المعاملة' : 'Failed to add transaction'));
+    }
   };
 
   // OCR Upload file and send to backend
@@ -361,6 +381,37 @@ export const TransactionsView: React.FC<TransactionsViewProps> = ({
             </h3>
 
             <form onSubmit={handleSubmitManual} className="space-y-3 text-xs">
+              {submitError && (
+                <div className="p-3 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-500 text-xs flex items-center gap-2">
+                  <AlertTriangle className="w-4 h-4 shrink-0" />
+                  <span>{submitError}</span>
+                </div>
+              )}
+
+              {/* Wallet Selector */}
+              <div>
+                <label className="block text-slate-700 dark:text-slate-300 font-bold mb-1">
+                  {isAr ? 'المحفظة المستخدمة' : 'Wallet'}
+                </label>
+                {wallets.length === 0 ? (
+                  <div className="p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-600 dark:text-amber-400 text-xs font-bold">
+                    ⚠️ {isAr ? 'لا توجد أي محفظة مسجلة. يرجى إنشاء محفظة أولاً من قسم المحافظ.' : 'No wallet found. Please create one in Wallets tab.'}
+                  </div>
+                ) : (
+                  <select
+                    value={walletId}
+                    onChange={(e) => setWalletId(e.target.value)}
+                    className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white font-medium focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                  >
+                    {wallets.map((w) => (
+                      <option key={w.id} value={w.id}>
+                        {w.name} ({w.type}) - {formatCurrency(w.balance, w.currency || 'EGP', lang)}
+                      </option>
+                    ))}
+                  </select>
+                )}
+              </div>
+
               <div>
                 <label className="block text-slate-700 dark:text-slate-300 font-bold mb-1">
                   {isAr ? 'نوع المعاملة' : 'Type'}

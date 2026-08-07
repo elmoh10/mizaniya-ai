@@ -13,7 +13,6 @@ export function validateBackendEnv(): void {
     'FIREBASE_PROJECT_ID',
     'FIRESTORE_DATABASE_ID',
     'GCP_PROJECT',
-    'GCP_LOCATION',
     'REDIS_HOST',
     'REDIS_PORT',
     'GEMINI_API_KEY',

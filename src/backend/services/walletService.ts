@@ -5,6 +5,10 @@ export async function getWalletsForUser(userId: string): Promise<Wallet[]> {
   return await walletRepository.getWallets(userId);
 }
 
+export async function ensureDefaultWalletForUser(userId: string): Promise<Wallet> {
+  return await walletRepository.ensureDefaultWallet(userId);
+}
+
 export async function createWalletForUser(userId: string, payload: Omit<Wallet, 'id'> & { id?: string }): Promise<Wallet> {
   return await walletRepository.createWallet(userId, payload);
 }

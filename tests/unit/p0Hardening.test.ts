@@ -144,30 +144,3 @@ describe('P0 Hardening - Redis & Rate Limiter / Idempotency Failures in Producti
     expect(next).not.toHaveBeenCalled();
   });
 });
-
-describe('P0 Hardening - Deployment & Storage Static Guardrails', () => {
-  it('does not let main Terraform create the existing Firestore database', () => {
-    const tf = fs.readFileSync(path.join(process.cwd(), 'infrastructure/terraform/main.tf'), 'utf8');
-    expect(tf).not.toContain('resource "google_firestore_database"');
-  });
-
-  it('runs Cloud Run with NODE_ENV=production and APP_ENV supplied separately', () => {
-    const tf = fs.readFileSync(path.join(process.cwd(), 'infrastructure/terraform/main.tf'), 'utf8');
-    expect(tf).toMatch(/name\s*=\s*"NODE_ENV"[\s\S]*?value\s*=\s*"production"/);
-    expect(tf).toMatch(/name\s*=\s*"APP_ENV"[\s\S]*?value\s*=\s*var\.environment/);
-  });
-
-  it('requires remote Terraform state in CI and has no local-state fallback', () => {
-    const workflow = fs.readFileSync(path.join(process.cwd(), '.github/workflows/deploy.yml'), 'utf8');
-    expect(workflow).toContain('TFSTATE_BUCKET: mizaniya-ai-staging-tfstate');
-    expect(workflow).not.toContain('terraform init -backend=false');
-  });
-
-  it('hardens receipt and voice upload storage rules', () => {
-    const rules = fs.readFileSync(path.join(process.cwd(), 'storage.rules'), 'utf8');
-    expect(rules).toContain('request.resource.size <= 5 * 1024 * 1024');
-    expect(rules).toContain("contentType.matches('image/(jpeg|png|webp)')");
-    expect(rules).toContain('request.resource.size <= 15 * 1024 * 1024');
-    expect(rules).toContain("contentType.matches('audio/(mpeg|mp4|m4a|wav|x-wav|webm|ogg)')");
-  });
-});

@@ -25,8 +25,8 @@ export type CategoryType =
 export interface Wallet {
   id: string;
   name: string;
-  nameAr: string;
-  type: 'bank' | 'wallet' | 'cash' | 'credit';
+  nameAr?: string;
+  type: 'cash' | 'bank' | 'card' | 'savings' | 'wallet' | 'credit';
   balance: number;
   currency: Currency;
   accountNumber?: string;

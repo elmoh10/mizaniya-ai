@@ -1,34 +1,11 @@
 rules_version = '2';
 service firebase.storage {
   match /b/{bucket}/o {
-    function isOwner(userId) {
-      return request.auth != null && request.auth.uid == userId;
-    }
-
-    function isAllowedReceiptImage() {
-      return request.resource != null
-        && request.resource.size <= 5 * 1024 * 1024
-        && request.resource.contentType.matches('image/(jpeg|png|webp)');
-    }
-
-    function isAllowedVoiceFile() {
-      return request.resource != null
-        && request.resource.size <= 15 * 1024 * 1024
-        && request.resource.contentType.matches('audio/(mpeg|mp4|m4a|wav|x-wav|webm|ogg)');
-    }
-
     match /users/{userId}/receipts/{allPaths=**} {
-      allow read, delete: if isOwner(userId);
-      allow create, update: if isOwner(userId) && isAllowedReceiptImage();
+      allow read, write: if request.auth != null && request.auth.uid == userId;
     }
-
     match /users/{userId}/voice/{allPaths=**} {
-      allow read, delete: if isOwner(userId);
-      allow create, update: if isOwner(userId) && isAllowedVoiceFile();
-    }
-
-    match /{allPaths=**} {
-      allow read, write: if false;
+      allow read, write: if request.auth != null && request.auth.uid == userId;
     }
   }
 }

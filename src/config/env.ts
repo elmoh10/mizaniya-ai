@@ -58,9 +58,9 @@ export function getFirebaseClientConfig(): FirebaseClientConfig {
   // Development mode fallback
   return {
     apiKey: apiKey || localConfig.apiKey || '',
-    authDomain: authDomain || localConfig.authDomain || 'mizaniya-ai-egypt-prod.firebaseapp.com',
-    projectId: projectId || localConfig.projectId || 'mizaniya-ai-egypt-prod',
-    storageBucket: storageBucket || localConfig.storageBucket || 'mizaniya-ai-egypt-prod.firebasestorage.app',
+    authDomain: authDomain || localConfig.authDomain || '',
+    projectId: projectId || localConfig.projectId || '',
+    storageBucket: storageBucket || localConfig.storageBucket || '',
     messagingSenderId: messagingSenderId || localConfig.messagingSenderId || '',
     appId: appId || localConfig.appId || '',
   };

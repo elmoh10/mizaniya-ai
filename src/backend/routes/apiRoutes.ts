@@ -7,7 +7,7 @@ import {
 import { authMiddleware, requireAdmin, AuthenticatedRequest } from '../middlewares/authMiddleware';
 import { rateLimiter } from '../middlewares/rateLimiter';
 import { idempotencyMiddleware } from '../middlewares/idempotencyMiddleware';
-import { getWalletsForUser, createWalletForUser } from '../services/walletService';
+import { getWalletsForUser, createWalletForUser, ensureDefaultWalletForUser } from '../services/walletService';
 import { transactionRepository } from '../repositories/transactionRepository';
 import { budgetRepository, goalRepository, billRepository } from '../repositories/budgetAndGoalRepositories';
 import { installmentRepository } from '../repositories/installmentRepository';
@@ -44,7 +44,8 @@ router.post('/profile/onboarding', async (req: AuthenticatedRequest, res) => {
     }
 
     const profile = await profileRepository.createProfileOnboarding(userId, userEmail, parseResult.data);
-    res.status(201).json({ success: true, profile });
+    const defaultWallet = await ensureDefaultWalletForUser(userId);
+    res.status(201).json({ success: true, profile, defaultWallet });
   } catch (err: any) {
     res.status(500).json({ error: 'Failed to complete profile onboarding', details: err.message });
   }
@@ -216,7 +217,11 @@ router.get('/financial-health', async (req: AuthenticatedRequest, res) => {
 router.get('/wallets', async (req: AuthenticatedRequest, res) => {
   try {
     const userId = req.user!.uid;
-    const wallets = await getWalletsForUser(userId);
+    let wallets = await getWalletsForUser(userId);
+    if (wallets.length === 0) {
+      const defaultWallet = await ensureDefaultWalletForUser(userId);
+      wallets = [defaultWallet];
+    }
     res.json({ success: true, wallets });
   } catch (err: any) {
     res.status(500).json({ error: 'Failed to fetch wallets', details: err.message });
@@ -303,13 +308,30 @@ router.post('/transactions', idempotencyMiddleware as any, async (req: Authentic
     const userId = req.user!.uid;
     const parseResult = transactionCreateSchema.safeParse(req.body);
     if (!parseResult.success) {
-      return res.status(400).json({ error: 'Invalid transaction data', details: parseResult.error.format() });
+      const walletIssue = parseResult.error.issues.find((issue) => issue.path.includes('walletId'));
+      if (walletIssue) {
+        return res.status(400).json({
+          error: 'يرجى اختيار محفظة معتمدة أو إنشاء محفظة أولاً من قسم المحافظ.',
+          details: parseResult.error.format(),
+        });
+      }
+      return res.status(400).json({
+        error: 'بيانات المعاملة غير مكتملة أو غير صالحة. يرجى التأكد من المبالغ والتفاصيل.',
+        details: parseResult.error.format(),
+      });
     }
 
     const transaction = await transactionRepository.createTransaction(userId, parseResult.data);
     res.status(201).json({ success: true, transaction });
   } catch (err: any) {
-    res.status(500).json({ error: 'Failed to create transaction', details: err.message });
+    const errMsg = err.message || '';
+    if (errMsg.includes('not found') || errMsg.includes('Source wallet')) {
+      return res.status(400).json({
+        error: 'المحفظة المحددة غير موجودة، يرجى التأكد من اختيار محفظة صحيحة أو إضافة محفظة جديدة من قسم المحافظ.',
+        details: err.message,
+      });
+    }
+    res.status(500).json({ error: 'فشل في تسجيل المعاملة على الخادم', details: err.message });
   }
 });
 

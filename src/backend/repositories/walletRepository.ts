@@ -50,6 +50,44 @@ export class WalletRepository {
     return true;
   }
 
+  async ensureDefaultWallet(userId: string): Promise<Wallet> {
+    const wallets = await this.getWallets(userId);
+    if (wallets.length > 0) {
+      return wallets[0];
+    }
+
+    const defaultWalletId = 'default_cash_wallet';
+    const userWalletsRef = this.getCollection(userId);
+
+    return await db.runTransaction(async (transaction) => {
+      const snap = await transaction.get(userWalletsRef);
+      if (!snap.empty) {
+        return snap.docs[0].data() as Wallet;
+      }
+
+      const defaultDocRef = userWalletsRef.doc(defaultWalletId);
+      const defaultDoc = await transaction.get(defaultDocRef);
+      if (defaultDoc.exists) {
+        return defaultDoc.data() as Wallet;
+      }
+
+      const defaultWallet: Wallet = {
+        id: defaultWalletId,
+        name: 'كاش',
+        nameAr: 'كاش',
+        type: 'cash',
+        currency: 'EGP',
+        balance: 0,
+        icon: 'Wallet',
+        color: 'bg-emerald-600',
+        isPrimary: true,
+      };
+
+      transaction.set(defaultDocRef, defaultWallet);
+      return defaultWallet;
+    });
+  }
+
   async updateWalletBalanceTransactional(
     userId: string,
     walletId: string,

@@ -3,6 +3,7 @@ import { AI_CONFIG } from '../ai/aiConfig';
 import {
   LayoutDashboard,
   Receipt,
+  Wallet,
   Bot,
   PieChart,
   CalendarCheck,
@@ -11,11 +12,13 @@ import {
   Users,
   BarChart3,
   AppWindow,
+  User,
 } from 'lucide-react';
 
 export type NavTab =
   | 'dashboard'
   | 'transactions'
+  | 'wallets'
   | 'aicoach'
   | 'budgets'
   | 'bills'
@@ -23,7 +26,8 @@ export type NavTab =
   | 'health'
   | 'family'
   | 'reports'
-  | 'widgets';
+  | 'widgets'
+  | 'profile';
 
 interface NavigationProps {
   activeTab: NavTab;
@@ -50,6 +54,12 @@ export const Navigation: React.FC<NavigationProps> = ({
       labelAr: 'المعاملات',
       labelEn: 'Transactions',
       icon: Receipt,
+    },
+    {
+      id: 'wallets' as NavTab,
+      labelAr: 'المحافظ',
+      labelEn: 'Wallets',
+      icon: Wallet,
     },
     {
       id: 'aicoach' as NavTab,
