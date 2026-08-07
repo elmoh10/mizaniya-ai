@@ -3,6 +3,7 @@ name: Mizaniya AI Staging CI/CD
 on:
   push:
     branches: [main]
+
   pull_request:
     branches: [main]
 
@@ -84,34 +85,40 @@ jobs:
         run: |
           gcloud storage buckets describe "gs://${{ env.TFSTATE_BUCKET }}" \
             --project="${{ env.GCP_PROJECT_ID }}" >/dev/null || {
-              echo "::error::Missing Terraform state bucket: ${{ env.TFSTATE_BUCKET }}. Run infrastructure/bootstrap/bootstrap.sh first.";
-              exit 1;
+              echo "::error::Missing Terraform state bucket: ${{ env.TFSTATE_BUCKET }}."
+              exit 1
             }
 
           gcloud artifacts repositories describe "${{ env.ARTIFACT_REPO }}" \
             --location="${{ env.GCP_REGION }}" \
             --project="${{ env.GCP_PROJECT_ID }}" >/dev/null || {
-              echo "::error::Missing Artifact Registry repository. Run infrastructure/bootstrap/bootstrap.sh first.";
-              exit 1;
+              echo "::error::Missing Artifact Registry repository: ${{ env.ARTIFACT_REPO }}."
+              exit 1
             }
 
           gcloud secrets describe gemini-api-key \
             --project="${{ env.GCP_PROJECT_ID }}" >/dev/null || {
-              echo "::error::Missing Secret Manager secret gemini-api-key.";
-              exit 1;
+              echo "::error::Missing Secret Manager secret: gemini-api-key."
+              exit 1
             }
 
           ENABLED_VERSIONS=$(gcloud secrets versions list gemini-api-key \
             --project="${{ env.GCP_PROJECT_ID }}" \
             --filter="state=ENABLED" \
             --format="value(name)")
+
           if [ -z "$ENABLED_VERSIONS" ]; then
-            echo "::error::gemini-api-key exists but has no enabled secret version.";
-            exit 1;
+            echo "::error::gemini-api-key exists but has no enabled secret version."
+            exit 1
           fi
 
+          echo "Bootstrap resources verified successfully."
+
       - name: Configure Docker Authentication
-        run: gcloud auth configure-docker "${{ env.GCP_REGION }}-docker.pkg.dev" --quiet
+        run: |
+          gcloud auth configure-docker \
+            "${{ env.GCP_REGION }}-docker.pkg.dev" \
+            --quiet
 
       - name: Build & Push Immutable Docker Image
         run: |
@@ -127,6 +134,7 @@ jobs:
             -t "$IMAGE_URI" .
 
           docker push "$IMAGE_URI"
+
           echo "IMAGE_URI=$IMAGE_URI" >> "$GITHUB_ENV"
 
       - name: Setup Terraform
@@ -141,7 +149,34 @@ jobs:
             -backend-config="bucket=${{ env.TFSTATE_BUCKET }}" \
             -backend-config="prefix=staging"
 
-      - name: Terraform Format Check
+      - name: Import Existing Cloud Run Service
+        working-directory: ./infrastructure/terraform
+        run: |
+          if terraform state show google_cloud_run_v2_service.mizaniya_app >/dev/null 2>&1; then
+            echo "Cloud Run service already exists in Terraform state."
+            echo "No import required."
+          else
+            if gcloud run services describe "${{ env.CLOUD_RUN_SERVICE }}" \
+              --region="${{ env.GCP_REGION }}" \
+              --project="${{ env.GCP_PROJECT_ID }}" >/dev/null 2>&1; then
+
+              echo "Existing Cloud Run service detected."
+              echo "Importing service into Terraform state..."
+
+              terraform import \
+                -var-file="environments/staging.tfvars" \
+                -var="container_image=${{ env.IMAGE_URI }}" \
+                google_cloud_run_v2_service.mizaniya_app \
+                "projects/${{ env.GCP_PROJECT_ID }}/locations/${{ env.GCP_REGION }}/services/${{ env.CLOUD_RUN_SERVICE }}"
+
+              echo "Cloud Run import completed successfully."
+            else
+              echo "Cloud Run service does not currently exist."
+              echo "Terraform will create it during apply."
+            fi
+          fi
+
+      - name: Terraform Format
         working-directory: ./infrastructure/terraform
         run: terraform fmt -recursive
 
@@ -161,13 +196,48 @@ jobs:
         working-directory: ./infrastructure/terraform
         run: terraform apply -auto-approve tfplan
 
-      - name: Verify Health and Readiness
+      - name: Verify Cloud Run Service
         run: |
           SERVICE_URL=$(gcloud run services describe "${{ env.CLOUD_RUN_SERVICE }}" \
             --region="${{ env.GCP_REGION }}" \
             --project="${{ env.GCP_PROJECT_ID }}" \
             --format="value(status.url)")
 
+          if [ -z "$SERVICE_URL" ]; then
+            echo "::error::Cloud Run service URL could not be resolved."
+            exit 1
+          fi
+
+          echo "SERVICE_URL=$SERVICE_URL" >> "$GITHUB_ENV"
           echo "Mizaniya AI Staging URL: $SERVICE_URL"
-          curl --fail --retry 8 --retry-delay 5 "$SERVICE_URL/health"
-          curl --fail --retry 8 --retry-delay 5 "$SERVICE_URL/ready"
+
+      - name: Verify Health Probe
+        run: |
+          curl \
+            --fail \
+            --retry 8 \
+            --retry-delay 5 \
+            --retry-all-errors \
+            "${{ env.SERVICE_URL }}/health"
+
+      - name: Verify Readiness Probe
+        run: |
+          curl \
+            --fail \
+            --retry 8 \
+            --retry-delay 5 \
+            --retry-all-errors \
+            "${{ env.SERVICE_URL }}/ready"
+
+      - name: Deployment Summary
+        run: |
+          echo "=============================================="
+          echo "MIZANIYA AI STAGING DEPLOYMENT SUCCESSFUL"
+          echo "=============================================="
+          echo "Project: ${{ env.GCP_PROJECT_ID }}"
+          echo "Region: ${{ env.GCP_REGION }}"
+          echo "Cloud Run Service: ${{ env.CLOUD_RUN_SERVICE }}"
+          echo "Application URL: ${{ env.SERVICE_URL }}"
+          echo "Docker Image: ${{ env.IMAGE_URI }}"
+          echo "Git SHA: ${{ github.sha }}"
+          echo "=============================================="
