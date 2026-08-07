@@ -21,8 +21,22 @@ try {
   // ignore config read warning
 }
 
-const projectId = process.env.FIREBASE_PROJECT_ID || process.env.GCP_PROJECT || fileProjectId || 'mizaniya-ai-egypt-prod';
-const databaseId = process.env.FIRESTORE_DATABASE_ID || fileDatabaseId || 'ai-studio-mizaniyaai';
+const projectId =
+  process.env.FIREBASE_PROJECT_ID ||
+  process.env.GCP_PROJECT ||
+  fileProjectId ||
+  (process.env.NODE_ENV === 'test' ? 'mizaniya-ai-test' : '');
+
+const databaseId =
+  process.env.FIRESTORE_DATABASE_ID ||
+  fileDatabaseId ||
+  '(default)';
+
+if (!projectId) {
+  throw new Error(
+    '[FIREBASE ADMIN CONFIG ERROR] FIREBASE_PROJECT_ID or GCP_PROJECT is required.'
+  );
+}
 
 const existingApps = getApps();
 if (!existingApps.length) {
