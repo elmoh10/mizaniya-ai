@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Mizaniya AI First-Time Infrastructure & Environment Bootstrap Script
 
-STAGING_PROJECT="mizaniya-ai-egypt-staging"
+STAGING_PROJECT="mizaniya-ai-staging"
 PROD_PROJECT="mizaniya-ai-egypt-prod"
 REGION="europe-west3"
 
