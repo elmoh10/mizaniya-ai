@@ -54,7 +54,7 @@ jobs:
             -t mizaniya-app:test .
 
   deploy-staging:
-    name: Deploy Staging
+    name: Deploy Staging via Terraform
     needs: validate-and-test
 
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
