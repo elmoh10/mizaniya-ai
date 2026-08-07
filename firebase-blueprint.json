@@ -1,0 +1,69 @@
+{
+  "entities": {
+    "User": {
+      "title": "User Profile",
+      "description": "User profile with preference and financial baseline settings",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "email": { "type": "string" },
+        "displayName": { "type": "string" },
+        "monthlySalary": { "type": "number" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["uid", "email"]
+    },
+    "Wallet": {
+      "title": "User Wallet / Account",
+      "description": "Financial wallet or connected bank account",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "nameAr": { "type": "string" },
+        "type": { "type": "string" },
+        "balance": { "type": "number" },
+        "currency": { "type": "string" },
+        "accountNumber": { "type": "string" },
+        "icon": { "type": "string" },
+        "color": { "type": "string" },
+        "isPrimary": { "type": "boolean" }
+      },
+      "required": ["id", "name", "balance", "currency"]
+    },
+    "Transaction": {
+      "title": "Financial Transaction",
+      "description": "Expense or Income record",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "amount": { "type": "number" },
+        "currency": { "type": "string" },
+        "type": { "type": "string" },
+        "category": { "type": "string" },
+        "walletId": { "type": "string" },
+        "paymentMethod": { "type": "string" },
+        "date": { "type": "string" },
+        "merchant": { "type": "string" },
+        "notes": { "type": "string" },
+        "aiTag": { "type": "string" }
+      },
+      "required": ["id", "title", "amount", "type", "category", "walletId"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/User" },
+      "description": "User profile documents"
+    },
+    "/users/{userId}/wallets/{walletId}": {
+      "schema": { "$ref": "#/entities/Wallet" },
+      "description": "User wallet accounts"
+    },
+    "/users/{userId}/transactions/{txId}": {
+      "schema": { "$ref": "#/entities/Transaction" },
+      "description": "User transactions"
+    }
+  }
+}

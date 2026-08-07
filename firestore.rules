@@ -1,0 +1,99 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isFamilyMember(familyId) {
+      return isAuthenticated() &&
+        exists(/databases/$(database)/documents/families/$(familyId)/members/$(request.auth.uid));
+    }
+
+    function getFamilyRole(familyId) {
+      return get(/databases/$(database)/documents/families/$(familyId)/members/$(request.auth.uid)).data.role;
+    }
+
+    function isFamilyAdminOrParent(familyId) {
+      return isFamilyMember(familyId) &&
+        (getFamilyRole(familyId) == 'ADMIN' || getFamilyRole(familyId) == 'PARENT');
+    }
+
+    function doesNotModifyPrivilegedFields() {
+      return !request.resource.data.diff(resource.data).affectedKeys()
+        .hasAny(['role', 'admin', 'subscriptionTier', 'billingStatus', 'adminFlags', 'securityFlags']);
+    }
+
+    // User Profile Collection
+    match /users/{userId} {
+      allow read: if isOwner(userId);
+      allow create: if isOwner(userId) && !request.resource.data.keys().hasAny(['role', 'admin', 'subscriptionTier', 'billingStatus', 'adminFlags', 'securityFlags']);
+      allow update: if isOwner(userId) && (resource == null || doesNotModifyPrivilegedFields());
+      allow delete: if false; // User deletion MUST occur via backend API workflow
+
+      match /wallets/{walletId} {
+        allow read, write: if isOwner(userId);
+      }
+
+      match /transactions/{txId} {
+        allow read, write: if isOwner(userId);
+      }
+
+      match /budgets/{budgetId} {
+        allow read, write: if isOwner(userId);
+      }
+
+      match /goals/{goalId} {
+        allow read, write: if isOwner(userId);
+      }
+
+      match /bills/{billId} {
+        allow read, write: if isOwner(userId);
+      }
+
+      match /installments/{installmentId} {
+        allow read, write: if isOwner(userId);
+      }
+
+      match /memory/{memoryId} {
+        allow read, write: if isOwner(userId);
+      }
+
+      match /ai_memories/{memoryId} {
+        allow read, write: if isOwner(userId);
+      }
+    }
+
+    // Shared Family Accounts (RBAC: ADMIN, PARENT, SPOUSE, CHILD, VIEWER)
+    match /families/{familyId} {
+      allow read: if isFamilyMember(familyId);
+      allow create: if isAuthenticated();
+      allow update, delete: if isFamilyAdminOrParent(familyId);
+
+      match /members/{memberId} {
+        allow read: if isFamilyMember(familyId);
+        allow create, delete: if isFamilyAdminOrParent(familyId);
+        allow update: if isFamilyAdminOrParent(familyId) ||
+          (isFamilyMember(familyId) && request.auth.uid == memberId &&
+            !request.resource.data.diff(resource.data).affectedKeys().hasAny(['role', 'spendingLimit', 'approvalThreshold']));
+      }
+
+      match /sharedTransactions/{txId} {
+        allow read: if isFamilyMember(familyId);
+        allow create, update, delete: if isFamilyMember(familyId) && getFamilyRole(familyId) != 'VIEWER';
+      }
+    }
+
+    // System Feature Flags & System Metrics (Admin restricted)
+    match /system_config/{configId} {
+      allow read: if isAuthenticated();
+      allow write: if request.auth.token.admin == true;
+    }
+  }
+}

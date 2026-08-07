@@ -1,0 +1,5 @@
+environment           = "production"
+gcp_project_id        = "mizaniya-ai-egypt-prod"
+gcp_region            = "europe-west3"
+firestore_database_id = "ai-studio-mizaniyaai"
+allowed_origins       = "https://mizaniya.ai,https://app.mizaniya.ai"

@@ -1,0 +1,12 @@
+{
+  "projectId": "mizaniya-ai-egypt-prod",
+  "appId": "1:981237555744:web:4d17142de1314e492e1245",
+  "apiKey": "AIzaSyCZ59yNMV29M2oh_1rvNO0BRr6WlRsgM1k",
+  "authDomain": "mizaniya-ai-egypt-prod.firebaseapp.com",
+  "firestoreDatabaseId": "ai-studio-mizaniyaai",
+  "storageBucket": "mizaniya-ai-egypt-prod.firebasestorage.app",
+  "messagingSenderId": "981237555744",
+  "measurementId": "",
+  "oAuthClientId": "",
+  "recaptchaSiteKey": ""
+}
