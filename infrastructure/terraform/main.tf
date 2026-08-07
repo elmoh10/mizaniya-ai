@@ -90,7 +90,7 @@ resource "google_compute_network" "vpc_network" {
 }
 
 resource "google_vpc_access_connector" "vpc_connector" {
-  name          = "mizaniya-vpc-connector-staging"
+  name          = "mizaniya-vpc-stg"
   region        = var.gcp_region
   network       = google_compute_network.vpc_network.name
   ip_cidr_range = "10.8.0.0/28"
