@@ -13,15 +13,15 @@ Execute `infrastructure/bootstrap/bootstrap.sh` or run the commands manually:
 
 ```bash
 # 1. Enable Cloud APIs
-gcloud services enable storage.googleapis.com secretmanager.googleapis.com artifactregistry.googleapis.com --project="mizaniya-ai-egypt-staging"
+gcloud services enable storage.googleapis.com secretmanager.googleapis.com artifactregistry.googleapis.com --project="mizaniya-ai-staging"
 
 # 2. Create Terraform State Bucket for Staging
-gcloud storage buckets create "gs://mizaniya-ai-egypt-staging-tfstate" \
-  --project="mizaniya-ai-egypt-staging" \
+gcloud storage buckets create "gs://mizaniya-ai-staging-tfstate" \
+  --project="mizaniya-ai-staging" \
   --location="europe-west3" \
   --uniform-bucket-level-access
 
-gcloud storage buckets update "gs://mizaniya-ai-egypt-staging-tfstate" --versioning
+gcloud storage buckets update "gs://mizaniya-ai-staging-tfstate" --versioning
 
 # 3. Create Terraform State Bucket for Production
 gcloud storage buckets create "gs://mizaniya-ai-egypt-prod-tfstate" \
@@ -45,7 +45,7 @@ You **MUST** add at least one enabled secret version before Cloud Run deployment
 printf '%s' "$STAGING_GEMINI_API_KEY" | \
   gcloud secrets versions add gemini-api-key \
   --data-file=- \
-  --project="mizaniya-ai-egypt-staging"
+  --project="mizaniya-ai-staging"
 
 # Production Secret Provisioning
 printf '%s' "$PROD_GEMINI_API_KEY" | \
@@ -60,10 +60,10 @@ printf '%s' "$PROD_GEMINI_API_KEY" | \
 
 Follow these ordered steps to execute a clean initial deployment:
 
-1. **Create/Verify Staging GCP & Firebase Project**: Ensure project `mizaniya-ai-egypt-staging` exists in Google Cloud Console.
-2. **Enable Billing**: Verify billing is linked to `mizaniya-ai-egypt-staging`.
-3. **Bootstrap Terraform State Bucket**: Run `gcloud storage buckets create gs://mizaniya-ai-egypt-staging-tfstate`.
-4. **Configure Workload Identity Federation**: Set up Workload Identity Pool and Service Account `mizaniya-deploy-sa@mizaniya-ai-egypt-staging.iam.gserviceaccount.com`.
+1. **Create/Verify Staging GCP & Firebase Project**: Ensure project `mizaniya-ai-staging` exists in Google Cloud Console.
+2. **Enable Billing**: Verify billing is linked to `mizaniya-ai-staging`.
+3. **Bootstrap Terraform State Bucket**: Run `gcloud storage buckets create gs://mizaniya-ai-staging-tfstate`.
+4. **Configure Workload Identity Federation**: Set up Workload Identity Pool and Service Account `mizaniya-deploy-sa@mizaniya-ai-staging.iam.gserviceaccount.com`.
 5. **Configure Firebase Authentication**: Enable Email/Password or Identity Providers in Firebase Console for `mizaniya-ai-egypt-staging`.
 6. **Create Firebase Web App**: Register Web App in Firebase Console to obtain `appId` and credentials.
 7. **Obtain Staging VITE_FIREBASE_* Values**: Add `STAGING_VITE_FIREBASE_API_KEY`, `STAGING_VITE_FIREBASE_APP_ID`, and `STAGING_VITE_FIREBASE_MESSAGING_SENDER_ID` to GitHub Secrets.
