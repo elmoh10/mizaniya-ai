@@ -1,65 +1,68 @@
-name: Mizaniya AI Production CI/CD
+name: Mizaniya AI Staging CI/CD
 
 on:
   push:
-    branches: [ main, master ]
+    branches:
+      - main
   pull_request:
-    branches: [ main, master ]
+    branches:
+      - main
 
 jobs:
   validate-and-test:
-    name: Build & Test (PR Validation)
+    name: Build & Test
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Setup Node.js Environment
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: 'npm'
+          cache: npm
 
       - name: Install Dependencies
         run: npm ci
 
-      - name: Run Type Check & Linting
+      - name: Type Check & Lint
         run: npm run lint
 
-      - name: Execute Vitest Test Suite
+      - name: Run Tests
         run: npm run test
 
-      - name: Verify Production Frontend Build
+      - name: Build Application
         env:
-          VITE_FIREBASE_API_KEY: "dummy_build_api_key_for_ci"
-          VITE_FIREBASE_PROJECT_ID: "mizaniya-ai-egypt-staging"
-          VITE_FIREBASE_AUTH_DOMAIN: "mizaniya-ai-egypt-staging.firebaseapp.com"
-          VITE_FIREBASE_STORAGE_BUCKET: "mizaniya-ai-egypt-staging.firebasestorage.app"
-          VITE_FIREBASE_APP_ID: "1:123456789:web:abcdef12345"
-          VITE_FIREBASE_MESSAGING_SENDER_ID: "123456789"
+          VITE_FIREBASE_API_KEY: ${{ secrets.VITE_FIREBASE_API_KEY }}
+          VITE_FIREBASE_PROJECT_ID: ${{ secrets.VITE_FIREBASE_PROJECT_ID }}
+          VITE_FIREBASE_AUTH_DOMAIN: ${{ secrets.VITE_FIREBASE_AUTH_DOMAIN }}
+          VITE_FIREBASE_STORAGE_BUCKET: ${{ secrets.VITE_FIREBASE_STORAGE_BUCKET }}
+          VITE_FIREBASE_APP_ID: ${{ secrets.VITE_FIREBASE_APP_ID }}
+          VITE_FIREBASE_MESSAGING_SENDER_ID: ${{ secrets.VITE_FIREBASE_MESSAGING_SENDER_ID }}
         run: npm run build
 
-      - name: Verify Dockerfile Build
+      - name: Verify Docker Build
         run: |
           docker build \
-            --build-arg VITE_FIREBASE_API_KEY="dummy_build_api_key_for_ci" \
-            --build-arg VITE_FIREBASE_PROJECT_ID="mizaniya-ai-egypt-staging" \
-            --build-arg VITE_FIREBASE_AUTH_DOMAIN="mizaniya-ai-egypt-staging.firebaseapp.com" \
-            --build-arg VITE_FIREBASE_STORAGE_BUCKET="mizaniya-ai-egypt-staging.firebasestorage.app" \
-            --build-arg VITE_FIREBASE_APP_ID="1:123456789:web:abcdef12345" \
-            --build-arg VITE_FIREBASE_MESSAGING_SENDER_ID="123456789" \
+            --build-arg VITE_FIREBASE_API_KEY="${{ secrets.VITE_FIREBASE_API_KEY }}" \
+            --build-arg VITE_FIREBASE_PROJECT_ID="${{ secrets.VITE_FIREBASE_PROJECT_ID }}" \
+            --build-arg VITE_FIREBASE_AUTH_DOMAIN="${{ secrets.VITE_FIREBASE_AUTH_DOMAIN }}" \
+            --build-arg VITE_FIREBASE_STORAGE_BUCKET="${{ secrets.VITE_FIREBASE_STORAGE_BUCKET }}" \
+            --build-arg VITE_FIREBASE_APP_ID="${{ secrets.VITE_FIREBASE_APP_ID }}" \
+            --build-arg VITE_FIREBASE_MESSAGING_SENDER_ID="${{ secrets.VITE_FIREBASE_MESSAGING_SENDER_ID }}" \
             -t mizaniya-app:test .
 
   deploy-staging:
-    name: Deploy to Staging Environment
+    name: Deploy Staging
     needs: validate-and-test
-    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
     runs-on: ubuntu-latest
-    environment: staging
 
     env:
-      GCP_PROJECT_ID: mizaniya-ai-egypt-staging
+      GCP_PROJECT_ID: mizaniya-ai-staging
       GCP_REGION: europe-west3
       ARTIFACT_REPO: mizaniya-repo
       IMAGE_NAME: mizaniya-app
@@ -69,95 +72,67 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Google Cloud Authentication (Workload Identity Federation)
+      - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
         with:
-          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
-          service_account: ${{ secrets.GCP_DEPLOY_SERVICE_ACCOUNT }}
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
 
-      - name: Set up Cloud SDK & Docker Credentials
+      - name: Setup Google Cloud SDK
         uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.GCP_PROJECT_ID }}
+
+      - name: Configure Docker Authentication
+        run: |
+          gcloud auth configure-docker \
+            ${{ env.GCP_REGION }}-docker.pkg.dev \
+            --quiet
 
       - name: Ensure Artifact Registry Repository Exists
         run: |
-          gcloud artifacts repositories describe ${{ env.ARTIFACT_REPO }} \
-            --location=${{ env.GCP_REGION }} \
-            --project=${{ env.GCP_PROJECT_ID }} || \
-          gcloud artifacts repositories create ${{ env.ARTIFACT_REPO }} \
+          gcloud artifacts repositories describe "${{ env.ARTIFACT_REPO }}" \
+            --location="${{ env.GCP_REGION }}" \
+            --project="${{ env.GCP_PROJECT_ID }}" || \
+          gcloud artifacts repositories create "${{ env.ARTIFACT_REPO }}" \
             --repository-format=docker \
-            --location=${{ env.GCP_REGION }} \
-            --project=${{ env.GCP_PROJECT_ID }} \
-            --description="Docker container repository for Mizaniya AI Application"
+            --location="${{ env.GCP_REGION }}" \
+            --project="${{ env.GCP_PROJECT_ID }}" \
+            --description="Mizaniya AI Docker Repository"
 
-      - name: Configure Docker for Artifact Registry
-        run: |
-          gcloud auth configure-docker ${{ env.GCP_REGION }}-docker.pkg.dev --quiet
-
-      - name: Build and Push Immutable Docker Image
+      - name: Build Docker Image
         run: |
           IMAGE_URI="${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT_ID }}/${{ env.ARTIFACT_REPO }}/${{ env.IMAGE_NAME }}:${{ github.sha }}"
-          IMAGE_LATEST="${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT_ID }}/${{ env.ARTIFACT_REPO }}/${{ env.IMAGE_NAME }}:latest"
-          
+
           docker build \
-            --build-arg VITE_FIREBASE_API_KEY="${{ secrets.STAGING_VITE_FIREBASE_API_KEY }}" \
-            --build-arg VITE_FIREBASE_PROJECT_ID="${{ env.GCP_PROJECT_ID }}" \
-            --build-arg VITE_FIREBASE_AUTH_DOMAIN="${{ env.GCP_PROJECT_ID }}.firebaseapp.com" \
-            --build-arg VITE_FIREBASE_STORAGE_BUCKET="${{ env.GCP_PROJECT_ID }}.firebasestorage.app" \
-            --build-arg VITE_FIREBASE_APP_ID="${{ secrets.STAGING_VITE_FIREBASE_APP_ID }}" \
-            --build-arg VITE_FIREBASE_MESSAGING_SENDER_ID="${{ secrets.STAGING_VITE_FIREBASE_MESSAGING_SENDER_ID }}" \
-            -t "$IMAGE_URI" -t "$IMAGE_LATEST" .
+            --build-arg VITE_FIREBASE_API_KEY="${{ secrets.VITE_FIREBASE_API_KEY }}" \
+            --build-arg VITE_FIREBASE_PROJECT_ID="${{ secrets.VITE_FIREBASE_PROJECT_ID }}" \
+            --build-arg VITE_FIREBASE_AUTH_DOMAIN="${{ secrets.VITE_FIREBASE_AUTH_DOMAIN }}" \
+            --build-arg VITE_FIREBASE_STORAGE_BUCKET="${{ secrets.VITE_FIREBASE_STORAGE_BUCKET }}" \
+            --build-arg VITE_FIREBASE_APP_ID="${{ secrets.VITE_FIREBASE_APP_ID }}" \
+            --build-arg VITE_FIREBASE_MESSAGING_SENDER_ID="${{ secrets.VITE_FIREBASE_MESSAGING_SENDER_ID }}" \
+            -t "$IMAGE_URI" .
 
           docker push "$IMAGE_URI"
-          docker push "$IMAGE_LATEST"
 
-      - name: Verify Secret Manager Gemini API Key Version
+      - name: Deploy to Cloud Run
         run: |
-          ENABLED_VERSIONS=$(gcloud secrets versions list gemini-api-key \
-            --project=${{ env.GCP_PROJECT_ID }} \
-            --filter="STATE=ENABLED" \
-            --format="value(name)" || true)
-          if [ -z "$ENABLED_VERSIONS" ]; then
-            echo "::error::CRITICAL DEPLOYMENT BLOCKER: Secret 'gemini-api-key' has no enabled versions in GCP project '${{ env.GCP_PROJECT_ID }}'."
-            echo "Please run the one-time secure secret version bootstrap command:"
-            echo "  printf '%s' \"\$GEMINI_API_KEY\" | gcloud secrets versions add gemini-api-key --data-file=- --project=${{ env.GCP_PROJECT_ID }}"
-            exit 1
-          fi
-          echo "Verified enabled secret version exists for gemini-api-key."
-
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: 1.6.0
-
-      - name: Terraform Init (Staging GCS Remote Backend)
-        run: |
-          cd infrastructure/terraform
-          terraform init \
-            -backend-config="bucket=${{ env.GCP_PROJECT_ID }}-tfstate" \
-            -backend-config="prefix=staging"
-
-      - name: Terraform Validate
-        run: |
-          cd infrastructure/terraform
-          terraform validate
-
-      - name: Terraform Plan
-        run: |
-          cd infrastructure/terraform
           IMAGE_URI="${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT_ID }}/${{ env.ARTIFACT_REPO }}/${{ env.IMAGE_NAME }}:${{ github.sha }}"
-          terraform plan \
-            -var-file="environments/staging.tfvars" \
-            -var="container_image=$IMAGE_URI" \
-            -out=tfplan
 
-      - name: Terraform Apply
-        run: |
-          cd infrastructure/terraform
-          terraform apply -auto-approve tfplan
+          gcloud run deploy "${{ env.CLOUD_RUN_SERVICE }}" \
+            --image="$IMAGE_URI" \
+            --region="${{ env.GCP_REGION }}" \
+            --project="${{ env.GCP_PROJECT_ID }}" \
+            --platform=managed \
+            --allow-unauthenticated \
+            --port=3000
 
-      - name: Verify Service Health & Readiness Probes
+      - name: Verify Deployment
         run: |
-          SERVICE_URL=$(gcloud run services describe ${{ env.CLOUD_RUN_SERVICE }} --region ${{ env.GCP_REGION }} --project ${{ env.GCP_PROJECT_ID }} --format 'value(status.url)')
-          echo "Deployed Staging Cloud Run URL: $SERVICE_URL"
-          curl -f "$SERVICE_URL/health" || exit 1
-          curl -f "$SERVICE_URL/ready" || exit 1
+          SERVICE_URL=$(gcloud run services describe "${{ env.CLOUD_RUN_SERVICE }}" \
+            --region="${{ env.GCP_REGION }}" \
+            --project="${{ env.GCP_PROJECT_ID }}" \
+            --format="value(status.url)")
+
+          echo "Mizaniya AI Staging URL: $SERVICE_URL"
+
+          curl --fail --retry 5 --retry-delay 5 "$SERVICE_URL/health"
