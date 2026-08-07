@@ -90,11 +90,13 @@ resource "google_compute_network" "vpc_network" {
 }
 
 resource "google_vpc_access_connector" "vpc_connector" {
-  name          = "mizaniya-vpc-${var.environment}"
+  name          = "mizaniya-vpc-connector-staging"
   region        = var.gcp_region
-  ip_cidr_range = "10.8.0.0/28"
   network       = google_compute_network.vpc_network.name
-  depends_on    = [google_project_service.required_services]
+  ip_cidr_range = "10.8.0.0/28"
+
+  min_instances = 2
+  max_instances = 3
 }
 
 # 3. Runtime service account
