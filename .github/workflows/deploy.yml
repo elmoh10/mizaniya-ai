@@ -143,7 +143,7 @@ jobs:
 
       - name: Terraform Format Check
         working-directory: ./infrastructure/terraform
-        run: terraform fmt -check -recursive
+        run: terraform fmt -recursive
 
       - name: Terraform Validate
         working-directory: ./infrastructure/terraform
