@@ -2,11 +2,9 @@ name: Mizaniya AI Staging CI/CD
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
   pull_request:
-    branches:
-      - main
+    branches: [main]
 
 jobs:
   validate-and-test:
@@ -56,14 +54,14 @@ jobs:
   deploy-staging:
     name: Deploy Staging via Terraform
     needs: validate-and-test
-
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-
     runs-on: ubuntu-latest
+    environment: staging
 
     env:
       GCP_PROJECT_ID: mizaniya-ai-staging
       GCP_REGION: europe-west3
+      TFSTATE_BUCKET: mizaniya-ai-staging-tfstate
       ARTIFACT_REPO: mizaniya-repo
       IMAGE_NAME: mizaniya-app
       CLOUD_RUN_SERVICE: mizaniya-app-service
@@ -82,24 +80,40 @@ jobs:
         with:
           project_id: ${{ env.GCP_PROJECT_ID }}
 
-      - name: Configure Docker Authentication
+      - name: Verify Bootstrap Resources
         run: |
-          gcloud auth configure-docker \
-            ${{ env.GCP_REGION }}-docker.pkg.dev \
-            --quiet
+          gcloud storage buckets describe "gs://${{ env.TFSTATE_BUCKET }}" \
+            --project="${{ env.GCP_PROJECT_ID }}" >/dev/null || {
+              echo "::error::Missing Terraform state bucket: ${{ env.TFSTATE_BUCKET }}. Run infrastructure/bootstrap/bootstrap.sh first.";
+              exit 1;
+            }
 
-      - name: Ensure Artifact Registry Repository Exists
-        run: |
           gcloud artifacts repositories describe "${{ env.ARTIFACT_REPO }}" \
             --location="${{ env.GCP_REGION }}" \
-            --project="${{ env.GCP_PROJECT_ID }}" || \
-          gcloud artifacts repositories create "${{ env.ARTIFACT_REPO }}" \
-            --repository-format=docker \
-            --location="${{ env.GCP_REGION }}" \
-            --project="${{ env.GCP_PROJECT_ID }}" \
-            --description="Mizaniya AI Docker Repository"
+            --project="${{ env.GCP_PROJECT_ID }}" >/dev/null || {
+              echo "::error::Missing Artifact Registry repository. Run infrastructure/bootstrap/bootstrap.sh first.";
+              exit 1;
+            }
 
-      - name: Build Docker Image
+          gcloud secrets describe gemini-api-key \
+            --project="${{ env.GCP_PROJECT_ID }}" >/dev/null || {
+              echo "::error::Missing Secret Manager secret gemini-api-key.";
+              exit 1;
+            }
+
+          ENABLED_VERSIONS=$(gcloud secrets versions list gemini-api-key \
+            --project="${{ env.GCP_PROJECT_ID }}" \
+            --filter="state=ENABLED" \
+            --format="value(name)")
+          if [ -z "$ENABLED_VERSIONS" ]; then
+            echo "::error::gemini-api-key exists but has no enabled secret version.";
+            exit 1;
+          fi
+
+      - name: Configure Docker Authentication
+        run: gcloud auth configure-docker "${{ env.GCP_REGION }}-docker.pkg.dev" --quiet
+
+      - name: Build & Push Immutable Docker Image
         run: |
           IMAGE_URI="${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT_ID }}/${{ env.ARTIFACT_REPO }}/${{ env.IMAGE_NAME }}:${{ github.sha }}"
 
@@ -113,20 +127,41 @@ jobs:
             -t "$IMAGE_URI" .
 
           docker push "$IMAGE_URI"
+          echo "IMAGE_URI=$IMAGE_URI" >> "$GITHUB_ENV"
 
-      - name: Deploy to Cloud Run
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.6.0
+
+      - name: Terraform Init
+        working-directory: ./infrastructure/terraform
         run: |
-          IMAGE_URI="${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT_ID }}/${{ env.ARTIFACT_REPO }}/${{ env.IMAGE_NAME }}:${{ github.sha }}"
+          terraform init \
+            -backend-config="bucket=${{ env.TFSTATE_BUCKET }}" \
+            -backend-config="prefix=staging"
 
-          gcloud run deploy "${{ env.CLOUD_RUN_SERVICE }}" \
-            --image="$IMAGE_URI" \
-            --region="${{ env.GCP_REGION }}" \
-            --project="${{ env.GCP_PROJECT_ID }}" \
-            --platform=managed \
-            --allow-unauthenticated \
-            --port=3000
+      - name: Terraform Format Check
+        working-directory: ./infrastructure/terraform
+        run: terraform fmt -check -recursive
 
-      - name: Verify Deployment
+      - name: Terraform Validate
+        working-directory: ./infrastructure/terraform
+        run: terraform validate
+
+      - name: Terraform Plan
+        working-directory: ./infrastructure/terraform
+        run: |
+          terraform plan \
+            -var-file="environments/staging.tfvars" \
+            -var="container_image=${{ env.IMAGE_URI }}" \
+            -out=tfplan
+
+      - name: Terraform Apply
+        working-directory: ./infrastructure/terraform
+        run: terraform apply -auto-approve tfplan
+
+      - name: Verify Health and Readiness
         run: |
           SERVICE_URL=$(gcloud run services describe "${{ env.CLOUD_RUN_SERVICE }}" \
             --region="${{ env.GCP_REGION }}" \
@@ -134,5 +169,5 @@ jobs:
             --format="value(status.url)")
 
           echo "Mizaniya AI Staging URL: $SERVICE_URL"
-
-          curl --fail --retry 5 --retry-delay 5 "$SERVICE_URL/health"
+          curl --fail --retry 8 --retry-delay 5 "$SERVICE_URL/health"
+          curl --fail --retry 8 --retry-delay 5 "$SERVICE_URL/ready"
