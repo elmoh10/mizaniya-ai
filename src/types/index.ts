@@ -51,6 +51,8 @@ export interface Transaction {
   isDuplicate?: boolean;
   aiTag?: string;
   hasAnomaly?: boolean;
+  relatedDebtId?: string;
+  relatedObligationId?: string;
 }
 
 export interface CategoryBudget {
@@ -137,6 +139,42 @@ export interface InstallmentDebt {
   updatedAt?: string;
 }
 
+export interface Debt {
+  id: string;
+  creditorName: string;
+  amountOriginal: number;
+  remainingAmount: number;
+  type: 'PERSONAL' | 'BANK' | 'CREDIT_CARD' | 'INSTALLMENT' | 'OTHER';
+  interestRate: number;
+  minimumPayment: number;
+  dueDate?: string;
+  status: 'ACTIVE' | 'PAID' | 'PAUSED' | 'OVERDUE' | 'ARCHIVED';
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface DebtPayment {
+  id: string;
+  amount: number;
+  paymentMethod?: string;
+  date: string;
+  notes?: string;
+  createdAt?: string;
+}
+
+export interface Obligation {
+  id: string;
+  name: string;
+  amount: number;
+  category: string;
+  dueDate: string;
+  status: 'ACTIVE' | 'PAUSED' | 'COMPLETED' | 'OVERDUE' | 'ARCHIVED';
+  frequency: 'WEEKLY' | 'MONTHLY' | 'QUARTERLY' | 'YEARLY' | 'CUSTOM';
+  notes?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
 export interface Bill {
   id: string;
   title: string;
@@ -149,6 +187,7 @@ export interface Bill {
   fawryCode?: string;
   icon: string;
   urgency: 'high' | 'medium' | 'low';
+  obligationId?: string;
 }
 
 export interface HealthScoreBreakdown {

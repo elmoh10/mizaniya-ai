@@ -13,6 +13,7 @@ import {
   BarChart3,
   AppWindow,
   User,
+  Coins,
 } from 'lucide-react';
 
 export type NavTab =
@@ -23,6 +24,7 @@ export type NavTab =
   | 'budgets'
   | 'bills'
   | 'goals'
+  | 'debts'
   | 'health'
   | 'family'
   | 'reports'
@@ -85,6 +87,12 @@ export const Navigation: React.FC<NavigationProps> = ({
       labelAr: 'الأهداف والمحاكي',
       labelEn: 'Goals & Simulator',
       icon: Target,
+    },
+    {
+      id: 'debts' as NavTab,
+      labelAr: 'الديون والالتزامات',
+      labelEn: 'Debts & Obligations',
+      icon: Coins,
     },
     {
       id: 'health' as NavTab,

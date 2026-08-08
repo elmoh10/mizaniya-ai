@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { ZodError } from 'zod';
 import {
   handleAIChat,
   handleAnalyzeReceipt,
@@ -13,6 +14,23 @@ import { budgetRepository, goalRepository, billRepository, subscriptionRepositor
 import { installmentRepository } from '../repositories/installmentRepository';
 import { profileRepository } from '../repositories/profileRepository';
 import { getTrustedFinancialContext } from '../services/financialContextService';
+import {
+  createDebt,
+  getDebt,
+  recordDebtPayment,
+  archiveDebt,
+  getDebtPayments
+} from '../services/debtService';
+import {
+  createObligation,
+  getObligations,
+  updateObligation,
+  pauseObligation,
+  resumeObligation,
+  deleteObligation,
+  completeObligation,
+  archiveObligation
+} from '../services/obligationService';
 import {
   walletCreateSchema,
   transactionCreateSchema,
@@ -517,6 +535,217 @@ router.get('/admin/metrics', requireAdmin as any, (req, res) => {
     error: 'Data unavailable',
     message: 'Real-time admin telemetry pipeline is currently unconfigured in this environment.',
   });
+});
+
+// Financial Context Route
+router.get('/financial-context', async (req: AuthenticatedRequest, res) => {
+  try {
+    const userId = req.user!.uid;
+    const context = await getTrustedFinancialContext(userId);
+    res.json({ success: true, context });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Failed to fetch financial context', details: err.message });
+  }
+});
+
+// Helper to map errors to appropriate HTTP status codes and responses
+function mapErrorToResponse(res: any, err: any, defaultMessage: string) {
+  if (err && (err.name === 'ZodError' || err.constructor?.name === 'ZodError')) {
+    return res.status(400).json({ error: 'Validation failed', details: err.errors || err.message });
+  }
+
+  const errMsg = err?.message || '';
+  const errCode = err?.code || '';
+
+  // 1. Not Found => 404
+  if (
+    err?.statusCode === 404 ||
+    errMsg.includes('not found') ||
+    errMsg.includes('not-found') ||
+    errMsg.includes('غير موجود') ||
+    errCode === 5 || // Firestore NOT_FOUND code
+    errCode === 'NOT_FOUND'
+  ) {
+    return res.status(404).json({ error: errMsg || 'Resource not found' });
+  }
+
+  // 2. Conflict => 409
+  if (
+    err?.statusCode === 409 ||
+    errMsg.includes('conflict') ||
+    errMsg.includes('already exists') ||
+    errCode === 6 || // Firestore ALREADY_EXISTS code
+    errCode === 'ALREADY_EXISTS'
+  ) {
+    return res.status(409).json({ error: errMsg || 'Conflict occurred' });
+  }
+
+  // 3. Bad Request => 400
+  if (
+    err?.statusCode === 400 ||
+    errMsg.includes('bad request') ||
+    errMsg.includes('invalid') ||
+    errMsg.includes('must be') ||
+    errMsg.includes('مبلغ') ||
+    errMsg.includes('مفتاح')
+  ) {
+    return res.status(400).json({ error: errMsg || 'Bad request' });
+  }
+
+  // 4. Unexpected => 500
+  const status = err?.statusCode || 500;
+  return res.status(status).json({ error: errMsg || defaultMessage });
+}
+
+// Debts Routes
+router.get('/debts', async (req: AuthenticatedRequest, res) => {
+  try {
+    const userId = req.user!.uid;
+    const context = await getTrustedFinancialContext(userId);
+    res.json({ success: true, debts: context.debts || [], totalDebtRemaining: context.totalDebtRemaining, monthlyDebtPayments: context.monthlyDebtPayments });
+  } catch (err: any) {
+    mapErrorToResponse(res, err, 'Failed to fetch debts');
+  }
+});
+
+router.post('/debts', async (req: AuthenticatedRequest, res) => {
+  try {
+    const userId = req.user!.uid;
+    const debt = await createDebt(userId, req.body);
+    res.status(201).json({ success: true, debt });
+  } catch (err: any) {
+    mapErrorToResponse(res, err, 'Failed to create debt');
+  }
+});
+
+router.get('/debts/:id', async (req: AuthenticatedRequest, res) => {
+  try {
+    const userId = req.user!.uid;
+    const debt = await getDebt(userId, req.params.id);
+    if (!debt) return res.status(404).json({ error: 'Debt not found' });
+    res.json({ success: true, debt });
+  } catch (err: any) {
+    mapErrorToResponse(res, err, 'Failed to fetch debt');
+  }
+});
+
+router.post('/debts/:id/pay', async (req: AuthenticatedRequest, res) => {
+  try {
+    const userId = req.user!.uid;
+    const idempotencyKey = req.header('X-Idempotency-Key') || req.header('x-idempotency-key');
+    if (!idempotencyKey) {
+      return res.status(400).json({ error: 'مفتاح عدم التكرار مطلوب X-Idempotency-Key' });
+    }
+    const { amount, paymentMethod, date } = req.body;
+    if (amount === undefined) {
+      return res.status(400).json({ error: 'مبلغ الدفع مطلوب' });
+    }
+    const result = await recordDebtPayment(userId, req.params.id, amount, paymentMethod, date, idempotencyKey);
+    res.json({ success: true, ...result });
+  } catch (err: any) {
+    mapErrorToResponse(res, err, 'Failed to record debt payment');
+  }
+});
+
+router.post('/debts/:id/archive', async (req: AuthenticatedRequest, res) => {
+  try {
+    const userId = req.user!.uid;
+    await archiveDebt(userId, req.params.id);
+    res.json({ success: true, id: req.params.id });
+  } catch (err: any) {
+    mapErrorToResponse(res, err, 'Failed to archive debt');
+  }
+});
+
+router.get('/debts/:id/payments', async (req: AuthenticatedRequest, res) => {
+  try {
+    const userId = req.user!.uid;
+    const payments = await getDebtPayments(userId, req.params.id);
+    res.json({ success: true, payments });
+  } catch (err: any) {
+    mapErrorToResponse(res, err, 'Failed to fetch debt payments');
+  }
+});
+
+// Obligations Routes
+router.get('/obligations', async (req: AuthenticatedRequest, res) => {
+  try {
+    const userId = req.user!.uid;
+    const obligations = await getObligations(userId);
+    res.json({ success: true, obligations });
+  } catch (err: any) {
+    mapErrorToResponse(res, err, 'Failed to fetch obligations');
+  }
+});
+
+router.post('/obligations', async (req: AuthenticatedRequest, res) => {
+  try {
+    const userId = req.user!.uid;
+    const obligation = await createObligation(userId, req.body);
+    res.status(201).json({ success: true, obligation });
+  } catch (err: any) {
+    mapErrorToResponse(res, err, 'Failed to create obligation');
+  }
+});
+
+router.patch('/obligations/:id', async (req: AuthenticatedRequest, res) => {
+  try {
+    const userId = req.user!.uid;
+    const obligation = await updateObligation(userId, req.params.id, req.body);
+    res.json({ success: true, obligation });
+  } catch (err: any) {
+    mapErrorToResponse(res, err, 'Failed to update obligation');
+  }
+});
+
+router.post('/obligations/:id/pause', async (req: AuthenticatedRequest, res) => {
+  try {
+    const userId = req.user!.uid;
+    await pauseObligation(userId, req.params.id);
+    res.json({ success: true, id: req.params.id });
+  } catch (err: any) {
+    mapErrorToResponse(res, err, 'Failed to pause obligation');
+  }
+});
+
+router.post('/obligations/:id/resume', async (req: AuthenticatedRequest, res) => {
+  try {
+    const userId = req.user!.uid;
+    await resumeObligation(userId, req.params.id);
+    res.json({ success: true, id: req.params.id });
+  } catch (err: any) {
+    mapErrorToResponse(res, err, 'Failed to resume obligation');
+  }
+});
+
+router.post('/obligations/:id/complete', async (req: AuthenticatedRequest, res) => {
+  try {
+    const userId = req.user!.uid;
+    await completeObligation(userId, req.params.id);
+    res.json({ success: true, id: req.params.id });
+  } catch (err: any) {
+    mapErrorToResponse(res, err, 'Failed to complete obligation');
+  }
+});
+
+router.post('/obligations/:id/archive', async (req: AuthenticatedRequest, res) => {
+  try {
+    const userId = req.user!.uid;
+    await archiveObligation(userId, req.params.id);
+    res.json({ success: true, id: req.params.id });
+  } catch (err: any) {
+    mapErrorToResponse(res, err, 'Failed to archive obligation');
+  }
+});
+
+router.delete('/obligations/:id', async (req: AuthenticatedRequest, res) => {
+  try {
+    const userId = req.user!.uid;
+    await deleteObligation(userId, req.params.id);
+    res.json({ success: true, id: req.params.id });
+  } catch (err: any) {
+    mapErrorToResponse(res, err, 'Failed to delete obligation');
+  }
 });
 
 export default router;

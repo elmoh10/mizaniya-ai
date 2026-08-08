@@ -68,6 +68,21 @@ service cloud.firestore {
         allow write: if false; // Must use authenticated backend API
       }
 
+      match /debts/{debtId} {
+        allow read: if isOwner(userId);
+        allow write: if false; // Must use authenticated backend API
+
+        match /payments/{paymentId} {
+          allow read: if isOwner(userId);
+          allow write: if false; // Must use authenticated backend API
+        }
+      }
+
+      match /obligations/{obligationId} {
+        allow read: if isOwner(userId);
+        allow write: if false; // Must use authenticated backend API
+      }
+
       match /memory/{memoryId} {
         allow read: if isOwner(userId);
         allow write: if false; // Must use authenticated backend API

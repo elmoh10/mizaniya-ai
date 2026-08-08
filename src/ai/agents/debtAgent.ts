@@ -203,7 +203,7 @@ export async function runDebtAgent(
     interestRate: i.interestRate || 0,
   }));
 
-  const debtsList = (context?.debts || []).filter(d => d.status === 'ACTIVE' || d.status === 'active').map(d => ({
+  const debtsList = (context?.debts || []).filter(d => d.status === 'ACTIVE' || d.status === 'active' || d.status === 'OVERDUE' || d.status === 'PAUSED').map(d => ({
     title: `دين لـ ${d.creditorName}`,
     provider: d.type || 'PERSONAL',
     remainingAmount: d.remainingAmount,
@@ -211,12 +211,24 @@ export async function runDebtAgent(
     interestRate: d.interestRate || 0,
   }));
 
+  const obligationsList = (context?.obligations || []).filter((o: any) => o.status === 'ACTIVE' || o.status === 'active').map((o: any) => ({
+    name: o.name,
+    amount: o.amount,
+    category: o.category,
+    dueDate: o.dueDate,
+  }));
+
   const contextData = {
     salary: context?.salary || 0,
     monthlySurplus: context?.monthlySurplus || 0,
     installments: installmentsList,
     debts: debtsList,
+    obligations: obligationsList,
     totalDebtsCount: installmentsList.length + debtsList.length,
+    totalObligationsCount: obligationsList.length,
+    monthlyDebtPayments: context?.monthlyDebtPayments || 0,
+    monthlyObligations: context?.monthlyObligations || 0,
+    debtToIncomeRatio: context?.debtToIncomeRatio || 0,
   };
 
   const isPlanRequested =
@@ -258,7 +270,7 @@ ${(plan.actionStepsAr || []).map(step => `  * ${step}`).join('\n')}`;
   }
 
   const systemInstruction = `
-أنت "وكيل إدارة الأقساط والديون" (Debt Strategy Agent) - الخبير المتخصص في تنظيم وهيكلة سداد الديون والالتزامات في مصر.
+أنت "وكيل إدارة الأقساط والديون والالتزامات" (Debt Strategy Agent) - الخبير المتخصص في تنظيم وهيكلة سداد الديون والالتزامات في مصر.
 تجيب بلهجة مصرية عامية ودودة وبسيطة وعملية جداً.
 
 البيانات المالية الحقيقية والمسجلة للعميل حالياً هي:
@@ -267,6 +279,7 @@ ${JSON.stringify(contextData, null, 2)}
 ${planResultText ? `إليك نتائج أداة حساب خطة السداد التي تم توليدها للمستخدم:\n${planResultText}\n` : ''}
 
 [قواعد هامة جداً حول طرق السداد]:
+- يجب التفرقة بوضوح بين الديون (outstanding debts) التي تحتوي على مبلغ متبقي (remainingAmount) وقسط أدنى، والالتزامات الشهرية المكررة (monthly obligations) مثل الإيجار والاشتراكات التي تدفع شهرياً وليس لها إجمالي متبقي.
 - لا تقل أبداً أن طريقة كرة الثلج (Snowball) تقلل الفوائد بالتعريف. كرة الثلج تركز على الجانب النفسي والتحفيز بسداد أصغر دين أولاً.
 - طريقة الانهيار الجليدي (Avalanche) تركز على سداد أعلى فائدة أولاً وهي التي تقلل الفوائد وتوفر المال.
 - قارن بين الطريقتين بوضوح تام إذا وجد ديون بها فوائد في قائمة الديون.
@@ -277,7 +290,7 @@ ${planResultText ? `إليك نتائج أداة حساب خطة السداد ا
    - الرد (answer) يجب أن يكون بصيغة: "تمام، ده دين شخصي بقيمة 10,000 جنيه لصالح أختك ولسه مش مسجل. تحب أسجله؟"
 
 2. نية عرض الديون (VIEW_DEBTS) أو خطة السداد (PAYOFF_PLAN):
-   - اعرض الديون المسجلة أو خطة السداد بوضوح تام بناءً على البيانات.
+   - اعرض الديون المسجلة أو خطة السداد بوضوح تام بناءً على البيانات. اعرض أيضاً الالتزامات الشهرية (obligations) كقسم منفصل لتوضيح الصورة الكاملة للالتزامات والديون.
 
 3. أي نقاش آخر أو متابعة (OTHER).
 `;

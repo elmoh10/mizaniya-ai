@@ -53,6 +53,11 @@ export interface TrustedFinancialContext {
     transactionsAvailable: boolean;
   };
   debts?: any[];
+  totalDebtRemaining: number;
+  monthlyDebtPayments: number;
+  monthlyObligations: number;
+  debtToIncomeRatio: number;
+  obligations?: any[];
 }
 
 export async function getTrustedFinancialContext(userId: string): Promise<TrustedFinancialContext> {
@@ -69,6 +74,7 @@ export async function getTrustedFinancialContext(userId: string): Promise<Truste
     installmentsSnap,
     debtsSnap,
     memoriesSnap,
+    obligationsSnap,
   ] = await Promise.all([
     userDocRef.get(),
     userDocRef.collection('wallets').get(),
@@ -79,6 +85,7 @@ export async function getTrustedFinancialContext(userId: string): Promise<Truste
     userDocRef.collection('installments').get(),
     userDocRef.collection('debts').get(),
     userDocRef.collection('ai_memories').get(),
+    userDocRef.collection('obligations').get(),
   ]);
 
   const userProfile = userDoc.exists ? userDoc.data() : {};
@@ -92,6 +99,7 @@ export async function getTrustedFinancialContext(userId: string): Promise<Truste
   const installments = installmentsSnap.docs.map((d) => ({ id: d.id, ...d.data() } as InstallmentDebt));
   const debts = debtsSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
   const aiMemories = memoriesSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
+  const obligations = obligationsSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
 
   const salary = Number(userProfile?.salary || currentBudget?.totalSalary || currentBudget?.totalIncome || 0);
   const totalWalletBalance = wallets.reduce((acc, w) => acc + (w.balance || 0), 0);
@@ -102,13 +110,22 @@ export async function getTrustedFinancialContext(userId: string): Promise<Truste
 
   const activeInstallments = installments.filter((i) => i.status === 'ACTIVE');
   const installmentDebtTotal = activeInstallments.reduce((acc, i) => acc + (i.remainingAmount || 0), 0);
-  const activeDebtsTotal = debts.filter((d: any) => d.status === 'ACTIVE' || d.status === 'active').reduce((acc, d: any) => acc + (d.remainingAmount || 0), 0);
 
-  const monthlyInstallmentObligation = activeInstallments.reduce((acc, i) => acc + (i.monthlyPayment || 0), 0) +
-    debts.filter((d: any) => d.status === 'ACTIVE' || d.status === 'active').reduce((acc, d: any) => acc + (d.minimumPayment || 0), 0);
+  // New specific properties for Debts & Monthly Obligations Module
+  const activeDebts = debts.filter((d: any) => d.status === 'ACTIVE' || d.status === 'active' || d.status === 'OVERDUE' || d.status === 'PAUSED');
+  const totalDebtRemaining = activeDebts.reduce((acc, d: any) => acc + (d.remainingAmount || 0), 0);
+  const monthlyDebtPayments = activeDebts.reduce((acc, d: any) => acc + (d.minimumPayment || 0), 0);
+
+  const activeObligations = obligations.filter((o: any) => o.status === 'ACTIVE' || o.status === 'active');
+  const monthlyObligations = activeObligations.reduce((acc, o: any) => acc + (o.amount || 0), 0);
+
+  const debtToIncomeRatio = Math.round(((monthlyDebtPayments + monthlyObligations) / (salary || 1)) * 100 * 10) / 10;
 
   // Backward compatible total debts
+  const activeDebtsTotal = activeDebts.reduce((acc, d: any) => acc + (d.remainingAmount || 0), 0);
   const debtsTotal = installmentDebtTotal + activeDebtsTotal;
+
+  const monthlyInstallmentObligation = activeInstallments.reduce((acc, i) => acc + (i.monthlyPayment || 0), 0) + monthlyDebtPayments;
 
   const currentMonthExpenses = recentTransactions
     .filter((tx) => tx.type === 'expense' && (tx.date || '').startsWith(monthKey))
@@ -126,16 +143,26 @@ export async function getTrustedFinancialContext(userId: string): Promise<Truste
     .filter((tx) => tx.type === 'expense' && tx.category === 'Emergency & Savings' && (tx.date || '').startsWith(monthKey))
     .reduce((acc, tx) => acc + (tx.amount || 0), 0);
 
-  // Avoid double counting
-  const paidInstallmentsThisMonth = recentTransactions
-    .filter((tx) => tx.type === 'expense' && tx.category === 'Installments & Debt' && (tx.date || '').startsWith(monthKey))
-    .reduce((acc, tx) => acc + (tx.amount || 0), 0);
-  const remainingInstallmentObligation = Math.max(0, monthlyInstallmentObligation - paidInstallmentsThisMonth);
+  const activeObligationIds = new Set(
+    obligations
+      .filter((o: any) => o.status === 'ACTIVE' || o.status === 'active')
+      .map((o: any) => o.id)
+  );
+
   const unpaidBillsThisMonthTotal = bills
-    .filter((b) => !b.isPaid && (b.dueDate || '').startsWith(monthKey))
+    .filter((b) => {
+      const isPaidMatch = !b.isPaid;
+      const monthMatch = (b.dueDate || '').startsWith(monthKey);
+      if (!isPaidMatch || !monthMatch) return false;
+      if (b.obligationId && activeObligationIds.has(b.obligationId)) {
+        return false;
+      }
+      return true;
+    })
     .reduce((acc, b) => acc + (b.amount || 0), 0);
 
-  const availableBalance = Math.max(0, salary - currentMonthExpenses - unpaidBillsThisMonthTotal - remainingInstallmentObligation);
+  const outstandingCommitments = calculateOutstandingMonthlyCommitments(debts, obligations, recentTransactions, monthKey);
+  const availableBalance = calculateAvailableBalance(salary, currentMonthExpenses, unpaidBillsThisMonthTotal, outstandingCommitments);
 
   const walletBalances = wallets.map((w) => ({
     name: w.nameAr || w.name,
@@ -242,6 +269,96 @@ export async function getTrustedFinancialContext(userId: string): Promise<Truste
     aiMemories,
     dataStatus,
     debts,
+    totalDebtRemaining,
+    monthlyDebtPayments,
+    monthlyObligations,
+    debtToIncomeRatio,
+    obligations,
   };
+}
+
+export function calculateOutstandingMonthlyCommitments(
+  debts: any[],
+  obligations: any[],
+  transactions: Transaction[],
+  monthKey: string
+): number {
+  const activeDebts = debts.filter((d) => d.status === 'ACTIVE' || d.status === 'active' || d.status === 'OVERDUE' || d.status === 'PAUSED');
+  const activeObligations = obligations.filter((o) => o.status === 'ACTIVE' || o.status === 'active');
+
+  const currentMonthTxs = transactions.filter((tx) => (tx.date || '').startsWith(monthKey) && tx.type === 'expense');
+
+  let outstanding = 0;
+
+  // 1. Debts
+  for (const debt of activeDebts) {
+    const minPay = Number(debt.minimumPayment || 0);
+    if (minPay <= 0) continue;
+
+    const paymentsThisMonth = currentMonthTxs
+      .filter((tx) => tx.relatedDebtId === debt.id)
+      .reduce((acc, tx) => acc + (tx.amount || 0), 0);
+
+    outstanding += Math.max(0, minPay - paymentsThisMonth);
+  }
+
+  // 2. Obligations
+  for (const ob of activeObligations) {
+    const amount = Number(ob.amount || 0);
+    if (amount <= 0) continue;
+
+    const paymentsThisMonth = currentMonthTxs
+      .filter((tx) => tx.relatedObligationId === ob.id || tx.relatedDebtId === ob.id)
+      .reduce((acc, tx) => acc + (tx.amount || 0), 0);
+
+    outstanding += Math.max(0, amount - paymentsThisMonth);
+  }
+
+  return outstanding;
+}
+
+export function calculatePaidCommitmentsThisMonth(
+  debts: any[],
+  obligations: any[],
+  transactions: Transaction[],
+  monthKey: string
+): number {
+  const activeDebts = debts.filter((d) => d.status === 'ACTIVE' || d.status === 'active' || d.status === 'OVERDUE' || d.status === 'PAUSED');
+  const activeObligations = obligations.filter((o) => o.status === 'ACTIVE' || o.status === 'active');
+
+  const currentMonthTxs = transactions.filter((tx) => (tx.date || '').startsWith(monthKey) && tx.type === 'expense');
+
+  let paid = 0;
+
+  // Debts
+  for (const debt of activeDebts) {
+    const minPay = Number(debt.minimumPayment || 0);
+    const paymentsThisMonth = currentMonthTxs
+      .filter((tx) => tx.relatedDebtId === debt.id)
+      .reduce((acc, tx) => acc + (tx.amount || 0), 0);
+
+    paid += Math.min(minPay, paymentsThisMonth);
+  }
+
+  // Obligations
+  for (const ob of activeObligations) {
+    const amount = Number(ob.amount || 0);
+    const paymentsThisMonth = currentMonthTxs
+      .filter((tx) => tx.relatedObligationId === ob.id || tx.relatedDebtId === ob.id)
+      .reduce((acc, tx) => acc + (tx.amount || 0), 0);
+
+    paid += Math.min(amount, paymentsThisMonth);
+  }
+
+  return paid;
+}
+
+export function calculateAvailableBalance(
+  salary: number,
+  currentMonthExpenses: number,
+  unpaidBillsThisMonthTotal: number,
+  outstandingMonthlyCommitments: number
+): number {
+  return Math.max(0, salary - currentMonthExpenses - unpaidBillsThisMonthTotal - outstandingMonthlyCommitments);
 }
 
