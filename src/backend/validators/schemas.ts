@@ -6,7 +6,15 @@ export const aiChatSchema = z.object({
     .enum(['coach_chat', 'auto_budget', 'debt_plan', 'fraud_check', 'savings_hedge'])
     .optional()
     .default('coach_chat'),
-  history: z.array(z.any()).optional().default([]),
+  history: z
+    .array(
+      z.object({
+        role: z.enum(['user', 'model']),
+        text: z.string(),
+      })
+    )
+    .optional()
+    .default([]),
 });
 
 export const ocrAnalyzeSchema = z.object({
