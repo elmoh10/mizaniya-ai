@@ -1,5 +1,6 @@
 import { Response } from 'express';
 import { routeAgentQuery } from '../../ai/supervisor';
+import { redactApiKey } from '../../ai/agents/coachAgent';
 import { parseReceiptImageWithGemini } from '../services/ocrService';
 import { parseVoiceCommandExpense } from '../services/voiceService';
 import { aiChatSchema, ocrAnalyzeSchema, voiceCommandSchema } from '../validators/schemas';
@@ -9,27 +10,42 @@ export async function handleAIChat(req: AuthenticatedRequest, res: Response) {
   try {
     const parseResult = aiChatSchema.safeParse(req.body);
     if (!parseResult.success) {
-      return res.status(400).json({ error: 'Invalid input', details: parseResult.error.format() });
+      return res.status(400).json({ error: 'المحتوى المدخل غير صالح أو فارغ', details: parseResult.error.format() });
     }
 
     const { message, intent, history } = parseResult.data;
+    const trimmedMsg = (message || '').trim();
+    if (!trimmedMsg) {
+      return res.status(400).json({ error: 'رسالة السؤال فارغة، يرجى كتابة استفسارك المالي.' });
+    }
+
     const userId = req.user?.uid;
 
     const result = await routeAgentQuery({
       userId,
       intent,
-      message,
+      message: trimmedMsg,
       chatHistory: history,
     });
 
+    if (result && result.success === false) {
+      return res.json({
+        success: false,
+        errorCode: result.errorCode,
+        answer: result.answer || 'خدمة الذكاء الاصطناعي غير متاحة حالياً، يرجى إعادة المحاولة.',
+      });
+    }
+
     res.json({
       success: true,
-      data: result,
+      answer: result.answer,
+      data: result.data || result,
       timestamp: new Date().toISOString(),
     });
   } catch (err: any) {
-    console.error('AI Controller Chat Error:', err);
-    res.status(500).json({ error: 'Failed to process AI query', details: err.message });
+    const safeError = redactApiKey(err?.message || 'Failed to process AI query');
+    console.error('AI Controller Chat Error:', safeError);
+    res.status(500).json({ error: 'فشل في معالجة استفسار الذكاء الاصطناعي', details: safeError });
   }
 }
 
