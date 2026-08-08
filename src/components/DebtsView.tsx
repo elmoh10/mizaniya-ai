@@ -92,13 +92,14 @@ export const DebtsView: React.FC<DebtsViewProps> = ({ lang, onRefreshData }) => 
       // 3. Fetch full context to get DTI and salary
       const contextRes = await apiClient.get('/financial-context');
 
-      if (debtsRes.success) {
-        setDebts(debtsRes.debts || []);
+      if (!debtsRes.success || !obRes.success || !contextRes.success) {
+        throw new Error(isAr ? 'تعذر تحميل بيانات الديون والالتزامات' : 'Failed to load debts and obligations');
       }
-      if (obRes.success) {
-        setObligations(obRes.obligations || []);
-      }
-      if (contextRes.success && contextRes.context) {
+
+      setDebts(debtsRes.debts || []);
+      setObligations(obRes.obligations || []);
+
+      if (contextRes.context) {
         const ctx = contextRes.context;
         setSummary({
           totalDebtRemaining: ctx.totalDebtRemaining || 0,
@@ -110,7 +111,7 @@ export const DebtsView: React.FC<DebtsViewProps> = ({ lang, onRefreshData }) => 
       }
     } catch (err: any) {
       console.error('Error loading debts view:', err);
-      setErrorMsg(isAr ? 'فشل تحميل بيانات الديون والالتزامات.' : 'Failed to load debts & obligations.');
+      setErrorMsg(isAr ? 'تعذر تحميل بيانات الديون والالتزامات' : 'Failed to load debts & obligations.');
     } finally {
       setLoading(false);
     }
@@ -351,6 +352,43 @@ export const DebtsView: React.FC<DebtsViewProps> = ({ lang, onRefreshData }) => 
 
   const dtiIsHigh = summary.debtToIncomeRatio > 40;
 
+  if (loading && debts.length === 0 && obligations.length === 0 && !errorMsg) {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-[400px] p-8 bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 rounded-3xl space-y-4 shadow-sm animate-pulse">
+        <div className="animate-spin rounded-full h-10 w-10 border-2 border-emerald-500 border-t-transparent" />
+        <p className="text-xs font-bold text-slate-500 dark:text-slate-400">
+          {isAr ? 'جاري تحميل الدفتر المالي من الخادم...' : 'Fetching financial ledger...'}
+        </p>
+      </div>
+    );
+  }
+
+  if (errorMsg && debts.length === 0 && obligations.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-[350px] p-8 bg-white dark:bg-slate-900 border border-red-500/10 dark:border-red-900/20 rounded-3xl space-y-5 text-center shadow-sm">
+        <div className="p-4 rounded-full bg-red-500/10 text-red-500">
+          <AlertTriangle className="w-10 h-10 shrink-0 animate-bounce" />
+        </div>
+        <div className="space-y-1.5">
+          <h3 className="text-base font-black text-slate-800 dark:text-slate-100">
+            {isAr ? 'تعذر تحميل بيانات الديون والالتزامات' : 'Unable to load debts & obligations'}
+          </h3>
+          <p className="text-xs text-slate-400 dark:text-slate-500 max-w-md mx-auto leading-relaxed">
+            {isAr 
+              ? 'حدث خطأ أثناء محاولة جلب بيانات المديونيات الحقيقية والالتزامات المتكررة من الخادم. يرجى إعادة المحاولة أو التحقق من اتصالك بالإنترنت.'
+              : 'An error occurred while connecting to the server. Please check your connection and try again.'}
+          </p>
+        </div>
+        <button
+          onClick={loadDebtsAndObligations}
+          className="px-5 py-2.5 rounded-xl bg-red-600 hover:bg-red-500 text-white font-black text-xs transition shadow-lg shadow-red-600/15"
+        >
+          {isAr ? 'إعادة المحاولة' : 'Retry'}
+        </button>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6">
       {/* Dynamic Header Banner */}
@@ -487,8 +525,43 @@ export const DebtsView: React.FC<DebtsViewProps> = ({ lang, onRefreshData }) => 
         </div>
       </div>
 
-      {/* Tabs Navigation */}
-      <div className="flex border-b border-slate-200 dark:border-slate-800">
+      {/* Empty State vs. Loaded content */}
+      {debts.length === 0 && obligations.length === 0 ? (
+        <div className="text-center bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 p-10 rounded-3xl shadow-sm space-y-5 flex flex-col items-center justify-center min-h-[300px]">
+          <div className="p-4 bg-slate-50 dark:bg-slate-800/40 rounded-full text-slate-400 dark:text-slate-500">
+            <Coins className="w-12 h-12" />
+          </div>
+          <div className="space-y-1.5 max-w-sm mx-auto">
+            <h3 className="text-base font-black text-slate-800 dark:text-slate-100">
+              {isAr ? 'لا توجد ديون أو التزامات مسجلة حالياً' : 'No debts or obligations registered'}
+            </h3>
+            <p className="text-xs text-slate-400 dark:text-slate-500 leading-relaxed">
+              {isAr 
+                ? 'دفترك المالي خالٍ من أي أقساط أو ديون مستحقة أو التزامات متكررة شهرياً. قم بتسجيل التزاماتك الأولى لتفعيل الحسابات المالية التلقائية.'
+                : 'Your financial profile is clear of any debts or active recurring commitments.'}
+            </p>
+          </div>
+          <div className="flex flex-wrap justify-center gap-3 pt-2">
+            <button
+              onClick={() => setShowAddDebtModal(true)}
+              className="px-4 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-xs flex items-center gap-2 transition shadow-lg shadow-emerald-500/10"
+            >
+              <Plus className="w-4 h-4" />
+              <span>{isAr ? 'إضافة دين' : 'Add Debt'}</span>
+            </button>
+            <button
+              onClick={() => setShowAddObligationModal(true)}
+              className="px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-black text-xs flex items-center gap-2 transition shadow-lg shadow-indigo-600/10"
+            >
+              <Plus className="w-4 h-4" />
+              <span>{isAr ? 'إضافة التزام شهري' : 'Add commitment'}</span>
+            </button>
+          </div>
+        </div>
+      ) : (
+        <>
+          {/* Tabs Navigation */}
+          <div className="flex border-b border-slate-200 dark:border-slate-800">
         <button
           onClick={() => setActiveTab('debts')}
           className={`px-5 py-3 text-sm font-bold border-b-2 transition ${
@@ -771,6 +844,8 @@ export const DebtsView: React.FC<DebtsViewProps> = ({ lang, onRefreshData }) => 
             </div>
           )}
         </div>
+      )}
+        </>
       )}
 
       {/* ================= MODAL: ADD DEBT ================= */}

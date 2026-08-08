@@ -6,7 +6,6 @@ import { TransactionsView } from './components/TransactionsView';
 import { AICoachView } from './components/AICoachView';
 import { BudgetsView } from './components/BudgetsView';
 import { BillsView } from './components/BillsView';
-import { DebtsView } from './components/DebtsView';
 import { GoalsView } from './components/GoalsView';
 import { HealthScoreView } from './components/HealthScoreView';
 import { FamilyView } from './components/FamilyView';
@@ -331,13 +330,6 @@ export function App() {
                   subscriptions={subscriptions}
                   onPayBill={handlePayBill}
                   lang={lang}
-                />
-              )}
-
-              {activeTab === 'debts' && (
-                <DebtsView
-                  lang={lang}
-                  onRefreshData={loadAppData}
                 />
               )}
 

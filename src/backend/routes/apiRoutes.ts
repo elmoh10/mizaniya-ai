@@ -550,8 +550,15 @@ router.get('/financial-context', async (req: AuthenticatedRequest, res) => {
 
 // Helper to map errors to appropriate HTTP status codes and responses
 function mapErrorToResponse(res: any, err: any, defaultMessage: string) {
-  if (err && (err.name === 'ZodError' || err.constructor?.name === 'ZodError')) {
-    return res.status(400).json({ error: 'Validation failed', details: err.errors || err.message });
+  if (
+    err &&
+    (err instanceof ZodError ||
+      err.name === 'ZodError' ||
+      err.constructor?.name === 'ZodError' ||
+      Array.isArray(err.issues) ||
+      Array.isArray(err.errors))
+  ) {
+    return res.status(400).json({ error: 'Validation failed', details: err.issues || err.errors || err.message });
   }
 
   const errMsg = err?.message || '';
