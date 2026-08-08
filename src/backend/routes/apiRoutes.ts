@@ -9,7 +9,7 @@ import { rateLimiter } from '../middlewares/rateLimiter';
 import { idempotencyMiddleware } from '../middlewares/idempotencyMiddleware';
 import { getWalletsForUser, createWalletForUser, ensureDefaultWalletForUser } from '../services/walletService';
 import { transactionRepository } from '../repositories/transactionRepository';
-import { budgetRepository, goalRepository, billRepository } from '../repositories/budgetAndGoalRepositories';
+import { budgetRepository, goalRepository, billRepository, subscriptionRepository } from '../repositories/budgetAndGoalRepositories';
 import { installmentRepository } from '../repositories/installmentRepository';
 import { profileRepository } from '../repositories/profileRepository';
 import { getTrustedFinancialContext } from '../services/financialContextService';
@@ -19,6 +19,7 @@ import {
   budgetSetSchema,
   goalCreateSchema,
   billCreateSchema,
+  subscriptionCreateSchema,
   installmentCreateSchema,
   profileOnboardingSchema,
   profileUpdateSchema,
@@ -113,7 +114,9 @@ router.post('/ai/generate-budget', async (req: AuthenticatedRequest, res) => {
       savingsTargetPercent,
     });
 
-    if (result && result.categories) {
+    const budgetData = result.success ? result.data : null;
+
+    if (budgetData && budgetData.categories) {
       // Aggregate real current month spent totals from Firestore transactions
       const userTransactions = await transactionRepository.getTransactions(userId, 200);
       const currentMonthPrefix = new Date().toISOString().slice(0, 7);
@@ -125,13 +128,13 @@ router.post('/ai/generate-budget', async (req: AuthenticatedRequest, res) => {
         }
       });
 
-      result.categories = result.categories.map((cat: any) => ({
+      budgetData.categories = budgetData.categories.map((cat: any) => ({
         ...cat,
         spentAmount: categorySpentMap[cat.category] || categorySpentMap[cat.name] || 0,
       }));
     }
 
-    res.json({ success: true, data: result });
+    res.json({ success: result.success, data: budgetData || result });
   } catch (err: any) {
     res.status(500).json({ error: 'Failed to generate budget', details: err.message });
   }
@@ -439,6 +442,32 @@ router.post('/bills/:id/pay', async (req: AuthenticatedRequest, res) => {
     res.json({ success: true, bill: updatedBill });
   } catch (err: any) {
     res.status(500).json({ error: 'Failed to mark bill as paid', details: err.message });
+  }
+});
+
+// Subscription Routes
+router.get('/subscriptions', async (req: AuthenticatedRequest, res) => {
+  try {
+    const userId = req.user!.uid;
+    const subscriptions = await subscriptionRepository.getSubscriptions(userId);
+    res.json({ success: true, subscriptions });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Failed to fetch subscriptions', details: err.message });
+  }
+});
+
+router.post('/subscriptions', async (req: AuthenticatedRequest, res) => {
+  try {
+    const userId = req.user!.uid;
+    const parseResult = subscriptionCreateSchema.safeParse(req.body);
+    if (!parseResult.success) {
+      return res.status(400).json({ error: 'Invalid subscription payload', details: parseResult.error.format() });
+    }
+
+    const subscription = await subscriptionRepository.saveSubscription(userId, parseResult.data as any);
+    res.status(201).json({ success: true, subscription });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Failed to save subscription', details: err.message });
   }
 });
 
