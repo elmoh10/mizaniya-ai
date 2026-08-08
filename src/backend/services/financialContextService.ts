@@ -52,6 +52,7 @@ export interface TrustedFinancialContext {
     incomeAvailable: boolean;
     transactionsAvailable: boolean;
   };
+  debts?: any[];
 }
 
 export async function getTrustedFinancialContext(userId: string): Promise<TrustedFinancialContext> {
@@ -66,6 +67,7 @@ export async function getTrustedFinancialContext(userId: string): Promise<Truste
     goalsSnap,
     billsSnap,
     installmentsSnap,
+    debtsSnap,
     memoriesSnap,
   ] = await Promise.all([
     userDocRef.get(),
@@ -75,6 +77,7 @@ export async function getTrustedFinancialContext(userId: string): Promise<Truste
     userDocRef.collection('goals').get(),
     userDocRef.collection('bills').get(),
     userDocRef.collection('installments').get(),
+    userDocRef.collection('debts').get(),
     userDocRef.collection('ai_memories').get(),
   ]);
 
@@ -87,6 +90,7 @@ export async function getTrustedFinancialContext(userId: string): Promise<Truste
   const goals = goalsSnap.docs.map((d) => ({ id: d.id, ...d.data() } as Goal));
   const bills = billsSnap.docs.map((d) => ({ id: d.id, ...d.data() } as Bill));
   const installments = installmentsSnap.docs.map((d) => ({ id: d.id, ...d.data() } as InstallmentDebt));
+  const debts = debtsSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
   const aiMemories = memoriesSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
 
   const salary = Number(userProfile?.salary || currentBudget?.totalSalary || currentBudget?.totalIncome || 0);
@@ -98,10 +102,13 @@ export async function getTrustedFinancialContext(userId: string): Promise<Truste
 
   const activeInstallments = installments.filter((i) => i.status === 'ACTIVE');
   const installmentDebtTotal = activeInstallments.reduce((acc, i) => acc + (i.remainingAmount || 0), 0);
-  const monthlyInstallmentObligation = activeInstallments.reduce((acc, i) => acc + (i.monthlyPayment || 0), 0);
+  const activeDebtsTotal = debts.filter((d: any) => d.status === 'ACTIVE' || d.status === 'active').reduce((acc, d: any) => acc + (d.remainingAmount || 0), 0);
+
+  const monthlyInstallmentObligation = activeInstallments.reduce((acc, i) => acc + (i.monthlyPayment || 0), 0) +
+    debts.filter((d: any) => d.status === 'ACTIVE' || d.status === 'active').reduce((acc, d: any) => acc + (d.minimumPayment || 0), 0);
 
   // Backward compatible total debts
-  const debtsTotal = installmentDebtTotal;
+  const debtsTotal = installmentDebtTotal + activeDebtsTotal;
 
   const currentMonthExpenses = recentTransactions
     .filter((tx) => tx.type === 'expense' && (tx.date || '').startsWith(monthKey))
@@ -234,6 +241,7 @@ export async function getTrustedFinancialContext(userId: string): Promise<Truste
     historicalIncomeStability,
     aiMemories,
     dataStatus,
+    debts,
   };
 }
 
