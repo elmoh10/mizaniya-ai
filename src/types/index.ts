@@ -188,7 +188,6 @@ export interface ChatMessage {
   timestamp: string;
   source?: string;
   actions?: { label: string; actionKey: string }[];
-  isSystemGreeting?: boolean;
 }
 
 export interface InsightTimelineItem {
@@ -240,9 +239,3 @@ export interface FeatureFlags {
   whatsappIntegration: boolean;
   instapayDirectSync: boolean;
 }
-
-export interface ChatHistoryMessage {
-  role: 'user' | 'model';
-  text: string;
-}
-

@@ -31,7 +31,6 @@ export const AICoachView: React.FC<AICoachViewProps> = ({ lang }) => {
         ? 'أهلاً بك! أنا كوتش ميزانية AI مستشارك المالي الذكي. كيف يمكنني مساعدتك اليوم في تنظيم ميزانيتك؟'
         : 'Welcome! I am your Mizaniya AI Financial Coach. How can I assist you with your finances today?',
       timestamp: '10:00 AM',
-      isSystemGreeting: true,
     },
   ]);
 
@@ -85,20 +84,23 @@ export const AICoachView: React.FC<AICoachViewProps> = ({ lang }) => {
       const response = await apiClient.post('/ai/chat', {
         message: text,
         intent: getIntentForAgent(activeAgent),
-        history: messages
-          .filter((m) => !m.isSystemGreeting)
-          .map((m) => ({
-            role: m.sender === 'user' ? (m.sender as 'user') : ('model' as const),
-            text: m.text,
-          })),
+        history: messages.map((m) => ({ role: m.sender === 'user' ? 'user' : 'model', parts: [{ text: m.text }] })),
       });
 
       let responseText = isAr ? 'عذراً، لم أتمكن من المعالجة الآن.' : 'Sorry, failed to process request.';
 
-      if (response.success && response.answer) {
-        responseText = response.answer;
-      } else if (response.answer) {
-        responseText = response.answer;
+      if (response.success && response.data) {
+        if (typeof response.data === 'string') {
+          responseText = response.data;
+        } else if (response.data.answer) {
+          responseText = response.data.answer;
+        } else if (response.data.reply) {
+          responseText = response.data.reply;
+        } else if (response.data.message) {
+          responseText = response.data.message;
+        } else {
+          responseText = JSON.stringify(response.data);
+        }
       } else if (response.error) {
         responseText = response.error;
       }
