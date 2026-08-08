@@ -8,6 +8,7 @@ import { BudgetsView } from './components/BudgetsView';
 import { BillsView } from './components/BillsView';
 import { GoalsView } from './components/GoalsView';
 import { HealthScoreView } from './components/HealthScoreView';
+import { DebtsView } from './components/DebtsView';
 import { FamilyView } from './components/FamilyView';
 import { ReportsView } from './components/ReportsView';
 import { AdminView } from './components/AdminView';
@@ -330,6 +331,13 @@ export function App() {
                   subscriptions={subscriptions}
                   onPayBill={handlePayBill}
                   lang={lang}
+                />
+              )}
+
+              {activeTab === 'debts' && (
+                <DebtsView
+                  lang={lang}
+                  onRefreshData={loadAppData}
                 />
               )}
 
