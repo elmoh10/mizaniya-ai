@@ -74,10 +74,48 @@ export function buildCoachContents(
     throw new Error('EMPTY_PROMPT');
   }
 
-  const bankText = contextData?.bank ? contextData.bank : 'غير محدد (غير متاح البيانات)';
-  const contextPrompt = contextData
-    ? `[معلومات مالية للمستخدم من الخادم الموثوق]: الراتب الشهري: ${contextData.salary || 0} ج.م، رصيد المحافظ: ${contextData.totalWalletBalance || 0} ج.م، إجمالي الأقساط والديون: ${contextData.debtsTotal || 0} ج.م، البنك الأساسي: ${bankText}.\n`
-    : '';
+  let contextPrompt = '';
+  if (contextData) {
+    const bankText = contextData.bank ? contextData.bank : 'غير محدد (غير متاح البيانات)';
+    
+    // Build deterministic context payload for grounding
+    const contextPayload = {
+      monthlyIncome: contextData.monthlyIncome || contextData.salary || 0,
+      monthlyExpenses: contextData.monthlyExpenses || 0,
+      monthlyBills: contextData.monthlyBills || 0,
+      monthlyInstallments: contextData.monthlyInstallments || 0,
+      monthlySavings: contextData.monthlySavings || 0,
+      availableBalance: contextData.availableBalance || 0,
+      walletBalances: contextData.walletBalances || [],
+      categorySpending: contextData.categorySpending || {},
+      activeGoals: contextData.activeGoals || [],
+      activeInstallments: contextData.activeInstallmentsList || contextData.activeInstallments || [],
+      dataStatus: contextData.dataStatus || {
+        incomeAvailable: (contextData.monthlyIncome || contextData.salary || 0) > 0,
+        transactionsAvailable: (contextData.recentTransactions || []).length > 0
+      }
+    };
+
+    contextPrompt = `
+[معلومات مالية حقيقية للمستخدم من الخادم الآمن والبيانات الحقيقية]:
+${JSON.stringify(contextPayload, null, 2)}
+البنك الأساسي: ${bankText}
+
+[قواعد صارمة جداً لحماية البيانات والمصداقية]:
+1. ممنوع تماماً اختراع، أو تخمين، أو افتراض أي رقم يخص (الراتب، المصاريف، الفواتير، الأقساط، المدخرات، أو رصيد المحفظة).
+2. يجب دائماً استخدام قيم الأرقام من الكائن المذكور أعلاه حصرياً عند الرد على أسئلة المستخدم الخاصة بحسابه أو أرقامه.
+3. إذا كانت المعاملات غير متوفرة أو قيمتها صفر (مثلاً dataStatus.transactionsAvailable كاذبة/false)، قل للمستخدم بوضوح بلهجة مصرية ودودة: "مرتبك المسجل هو \${contextPayload.monthlyIncome} ج.م، لكن لسه معنديش معاملات كفاية أحسب مصاريف الشهر بدقة." واشرح له كيف يضيف معاملاته لتكتمل الحسابات. لا تفترض مبالغ مجهولة أو ميزانية افتراضية من عندك عند سؤالك عن أرقامه الحالية!
+4. إذا طلب المستخدم توفير مبلغ معين (مثلاً "عاوز أوفر 2000 جنيه الشهر ده"):
+   - انظر للفائض الفعلي المتاح له (availableBalance).
+   - حدد هل المبلغ المطلوب واقعي ومتاح ادخاره أم لا بناءً على (monthlyIncome - monthlyExpenses - الألتزامات).
+   - احسب الادخار الأسبوعي المطلوب (المبلغ المطلوب / 4) والادخار اليومي المطلوب (المبلغ المطلوب / 30).
+   - اقترح تقليص فئات مصاريف محددة تظهر في تفصيل المصاريف المذكور في (categorySpending).
+   - ممنوع منعاً باتاً وبشكل قاطع تلقائياً اقتراح أو التوصية بشراء الذهب أو الشهادات أو الاستثمارات أو تخمين عوائد استثمارية، إلا إذا سألك المستخدم صراحةً عن الاستثمار والادخار بالذهب والشهادات!
+5. إذا سألك المستخدم "هل أقدر أشتري لابتوب بـ X ج.م؟" أو ما شابه:
+   - أجب بناءً على الأرقام الحقيقية المذكورة في رصيد محفظته والالتزامات النشطة.
+   - لا تخترع أو تفترض أي مبالغ إضافية.
+\n`;
+  }
 
   let finalPrompt = (contextPrompt + trimmedUserMsg).trim();
   if (!finalPrompt) {

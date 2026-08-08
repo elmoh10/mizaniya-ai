@@ -6,6 +6,27 @@ export interface TrustedFinancialContext {
   userProfile?: any;
   salary: number;
   monthlyIncome: number;
+  monthlyExpenses: number;
+  monthlyBills: number;
+  monthlyInstallments: number;
+  monthlySavings: number;
+  availableBalance: number;
+  walletBalances: Array<{ name: string; balance: number; currency: string }>;
+  categorySpending: Record<string, number>;
+  activeGoals: Array<{
+    title: string;
+    targetAmount: number;
+    currentAmount: number;
+    monthlyTarget: number;
+    successProbability: number;
+  }>;
+  activeInstallments: InstallmentDebt[];
+  activeInstallmentsList: Array<{
+    title: string;
+    remainingAmount: number;
+    monthlyPayment: number;
+    provider: string;
+  }>;
   wallets: Wallet[];
   totalWalletBalance: number;
   recentTransactions: Transaction[];
@@ -15,7 +36,6 @@ export interface TrustedFinancialContext {
   unpaidBills: Bill[];
   unpaidBillsTotal: number;
   installments: InstallmentDebt[];
-  activeInstallments: InstallmentDebt[];
   installmentDebtTotal: number;
   monthlyInstallmentObligation: number;
   debtsTotal: number;
@@ -28,6 +48,10 @@ export interface TrustedFinancialContext {
     status: 'CALCULATED' | 'INSUFFICIENT_DATA';
   };
   aiMemories?: any[];
+  dataStatus?: {
+    incomeAvailable: boolean;
+    transactionsAvailable: boolean;
+  };
 }
 
 export async function getTrustedFinancialContext(userId: string): Promise<TrustedFinancialContext> {
@@ -83,6 +107,63 @@ export async function getTrustedFinancialContext(userId: string): Promise<Truste
     .filter((tx) => tx.type === 'expense' && (tx.date || '').startsWith(monthKey))
     .reduce((acc, tx) => acc + (tx.amount || 0), 0);
 
+  // Deterministic monthly properties
+  const monthlyIncome = salary;
+  const monthlyExpenses = currentMonthExpenses;
+  const monthlyBills = bills
+    .filter((b) => (b.dueDate || '').startsWith(monthKey))
+    .reduce((acc, b) => acc + (b.amount || 0), 0);
+  const monthlyInstallments = monthlyInstallmentObligation;
+  
+  const monthlySavings = recentTransactions
+    .filter((tx) => tx.type === 'expense' && tx.category === 'Emergency & Savings' && (tx.date || '').startsWith(monthKey))
+    .reduce((acc, tx) => acc + (tx.amount || 0), 0);
+
+  // Avoid double counting
+  const paidInstallmentsThisMonth = recentTransactions
+    .filter((tx) => tx.type === 'expense' && tx.category === 'Installments & Debt' && (tx.date || '').startsWith(monthKey))
+    .reduce((acc, tx) => acc + (tx.amount || 0), 0);
+  const remainingInstallmentObligation = Math.max(0, monthlyInstallmentObligation - paidInstallmentsThisMonth);
+  const unpaidBillsThisMonthTotal = bills
+    .filter((b) => !b.isPaid && (b.dueDate || '').startsWith(monthKey))
+    .reduce((acc, b) => acc + (b.amount || 0), 0);
+
+  const availableBalance = Math.max(0, salary - currentMonthExpenses - unpaidBillsThisMonthTotal - remainingInstallmentObligation);
+
+  const walletBalances = wallets.map((w) => ({
+    name: w.nameAr || w.name,
+    balance: w.balance || 0,
+    currency: w.currency || 'EGP',
+  }));
+
+  const categorySpending: Record<string, number> = {};
+  recentTransactions
+    .filter((tx) => tx.type === 'expense' && (tx.date || '').startsWith(monthKey))
+    .forEach((tx) => {
+      categorySpending[tx.category] = (categorySpending[tx.category] || 0) + (tx.amount || 0);
+    });
+
+  const activeGoals = goals.map((g) => ({
+    title: g.titleAr || g.title,
+    targetAmount: g.targetAmount,
+    currentAmount: g.currentAmount,
+    monthlyTarget: g.monthlyTarget,
+    successProbability: g.successProbability,
+  }));
+
+  const activeInstallmentsList = activeInstallments.map((i) => ({
+    title: i.titleAr || i.title,
+    remainingAmount: i.remainingAmount,
+    monthlyPayment: i.monthlyPayment,
+    provider: i.provider,
+  }));
+
+  const currentMonthTxs = recentTransactions.filter((tx) => (tx.date || '').startsWith(monthKey));
+  const dataStatus = {
+    incomeAvailable: salary > 0,
+    transactionsAvailable: currentMonthTxs.length > 0,
+  };
+
   const monthlySurplus = Math.max(0, salary - currentMonthExpenses - monthlyInstallmentObligation - unpaidBillsTotal);
 
   // Historical Income Stability Analysis (3-6 Months)
@@ -126,7 +207,17 @@ export async function getTrustedFinancialContext(userId: string): Promise<Truste
     userId,
     userProfile,
     salary,
-    monthlyIncome: salary,
+    monthlyIncome,
+    monthlyExpenses,
+    monthlyBills,
+    monthlyInstallments,
+    monthlySavings,
+    availableBalance,
+    walletBalances,
+    categorySpending,
+    activeGoals,
+    activeInstallments,
+    activeInstallmentsList,
     wallets,
     totalWalletBalance,
     recentTransactions,
@@ -136,13 +227,13 @@ export async function getTrustedFinancialContext(userId: string): Promise<Truste
     unpaidBills,
     unpaidBillsTotal,
     installments,
-    activeInstallments,
     installmentDebtTotal,
     monthlyInstallmentObligation,
     debtsTotal,
     monthlySurplus,
     historicalIncomeStability,
     aiMemories,
+    dataStatus,
   };
 }
 
