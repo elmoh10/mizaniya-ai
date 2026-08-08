@@ -77,6 +77,14 @@ service cloud.firestore {
         allow read: if isOwner(userId);
         allow write: if false; // Must use authenticated backend API
       }
+
+      match /ai_conversations/{agentId} {
+        allow read, write: if isOwner(userId);
+
+        match /messages/{messageId} {
+          allow read, write: if isOwner(userId);
+        }
+      }
     }
 
     // Shared Family Accounts (RBAC: ADMIN, PARENT, SPOUSE, CHILD, VIEWER)
