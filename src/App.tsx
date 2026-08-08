@@ -314,7 +314,7 @@ export function App() {
                 />
               )}
 
-              {activeTab === 'aicoach' && <AICoachView lang={lang} />}
+              {activeTab === 'aicoach' && <AICoachView lang={lang} user={user} />}
 
               {activeTab === 'budgets' && (
                 <BudgetsView
