@@ -53,6 +53,7 @@ export interface Transaction {
   hasAnomaly?: boolean;
   relatedDebtId?: string;
   relatedObligationId?: string;
+  relatedInstallmentId?: string;
 }
 
 export interface CategoryBudget {
@@ -134,6 +135,7 @@ export interface InstallmentDebt {
   dueDay: number;
   provider: string; // ValU, Sympl, CIB Bank Loan, B.TECH, Aman, Credit Card
   status: 'ACTIVE' | 'PAID_OFF';
+  debtId?: string;
   notes?: string;
   createdAt?: string;
   updatedAt?: string;

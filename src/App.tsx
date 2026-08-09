@@ -322,6 +322,7 @@ export function App() {
                   budget={budget}
                   onUpdateBudget={handleUpdateBudget}
                   lang={lang}
+                  onNavigateTab={(tab) => setActiveTab(tab)}
                 />
               )}
 

@@ -14,6 +14,7 @@ import { budgetRepository, goalRepository, billRepository, subscriptionRepositor
 import { installmentRepository } from '../repositories/installmentRepository';
 import { profileRepository } from '../repositories/profileRepository';
 import { getTrustedFinancialContext } from '../services/financialContextService';
+import { buildSmartBudgetPlan, saveSmartBudgetPlan } from '../services/budgetPlanningService';
 import {
   createDebt,
   getDebt,
@@ -47,6 +48,19 @@ import { routeAgentQuery } from '../../ai/supervisor';
 import { db } from '../config/firebaseAdmin';
 
 const router = Router();
+
+async function markBudgetStale(userId: string): Promise<void> {
+  try {
+    const monthKey = new Date().toISOString().slice(0, 7);
+    const budgetDocRef = db.collection('users').doc(userId).collection('budgets').doc(monthKey);
+    const doc = await budgetDocRef.get();
+    if (doc.exists) {
+      await budgetDocRef.set({ isStale: true }, { merge: true });
+    }
+  } catch (err) {
+    console.error('Error marking budget as stale:', err);
+  }
+}
 
 // Apply auth middleware and rate limiting
 router.use(authMiddleware as any);
@@ -113,9 +127,10 @@ router.post('/ai/parse-voice', handleParseVoiceCommand as any);
 router.post('/ai/generate-budget', async (req: AuthenticatedRequest, res) => {
   try {
     const userId = req.user!.uid;
-    const { savingsTargetPercent } = req.body;
+    const { savingsTargetPercent = 20 } = req.body;
 
-    const context = await getTrustedFinancialContext(userId);
+    let context = await getTrustedFinancialContext(userId);
+
     if (!context.salary || context.salary <= 0) {
       return res.status(200).json({
         success: false,
@@ -126,33 +141,69 @@ router.post('/ai/generate-budget', async (req: AuthenticatedRequest, res) => {
       });
     }
 
-    const result = await routeAgentQuery({
-      userId,
-      intent: 'auto_budget',
-      savingsTargetPercent,
-    });
+    const plan = await buildSmartBudgetPlan(context, savingsTargetPercent);
 
-    const budgetData = result.success ? result.data : null;
+    // Save the smart budget plan using our shared helper
+    const firestoreBudget = await saveSmartBudgetPlan(userId, plan, savingsTargetPercent);
 
-    if (budgetData && budgetData.categories) {
-      // Aggregate real current month spent totals from Firestore transactions
-      const userTransactions = await transactionRepository.getTransactions(userId, 200);
-      const currentMonthPrefix = new Date().toISOString().slice(0, 7);
-      const categorySpentMap: Record<string, number> = {};
-
-      userTransactions.forEach((tx) => {
-        if (tx.type === 'expense' && tx.date.startsWith(currentMonthPrefix)) {
-          categorySpentMap[tx.category] = (categorySpentMap[tx.category] || 0) + tx.amount;
-        }
-      });
-
-      budgetData.categories = budgetData.categories.map((cat: any) => ({
-        ...cat,
-        spentAmount: categorySpentMap[cat.category] || categorySpentMap[cat.name] || 0,
-      }));
+    function getCategoryColor(cat: string): string {
+      switch (cat) {
+        case 'Food & Groceries': return '#10B981';
+        case 'Housing & Utilities': return '#0EA5E9';
+        case 'Transport & Ride Apps': return '#F59E0B';
+        case 'Installments & Debt': return '#F43F5E';
+        case 'Health & Education': return '#3B82F6';
+        case 'Family & Allowances': return '#6366F1';
+        case 'Shopping & Entertainment': return '#8B5CF6';
+        case 'Emergency & Savings': return '#14B8A6';
+        default: return '#6B7280';
+      }
     }
 
-    res.json({ success: result.success, data: budgetData || result });
+    function getCategoryIconName(cat: string): string {
+      switch (cat) {
+        case 'Food & Groceries': return 'ShoppingBag';
+        case 'Housing & Utilities': return 'Home';
+        case 'Transport & Ride Apps': return 'Car';
+        case 'Installments & Debt': return 'CreditCard';
+        case 'Health & Education': return 'HeartPulse';
+        case 'Family & Allowances': return 'UserCheck';
+        case 'Shopping & Entertainment': return 'Coffee';
+        case 'Emergency & Savings': return 'TrendingUp';
+        default: return 'ShieldAlert';
+      }
+    }
+
+    const categoriesMappedForResponse = plan.categories.map((cat) => ({
+      categoryKey: cat.categoryKey,
+      category: cat.categoryKey,
+      categoryAr: cat.categoryAr,
+      name: cat.categoryAr,
+      allocatedAmount: cat.allocatedAmount,
+      amount: cat.allocatedAmount,
+      spentAmount: cat.spentAmount,
+      remainingAmount: cat.remainingAmount,
+      percentageOfFlexiblePool: cat.percentageOfFlexiblePool,
+      status: cat.status,
+      color: getCategoryColor(cat.categoryKey),
+      icon: getCategoryIconName(cat.categoryKey),
+    }));
+
+    const responseBudget = { ...firestoreBudget };
+    if (responseBudget.generatedAt && typeof (responseBudget.generatedAt as any).toDate === 'function') {
+      responseBudget.generatedAt = (responseBudget.generatedAt as any).toDate().toISOString() as any;
+    }
+    if (responseBudget.lastCalculatedAt && typeof (responseBudget.lastCalculatedAt as any).toDate === 'function') {
+      responseBudget.lastCalculatedAt = (responseBudget.lastCalculatedAt as any).toDate().toISOString() as any;
+    }
+
+    res.json({
+      success: true,
+      data: {
+        ...responseBudget,
+        categories: categoriesMappedForResponse,
+      },
+    });
   } catch (err: any) {
     res.status(500).json({ error: 'Failed to generate budget', details: err.message });
   }
@@ -258,6 +309,7 @@ router.post('/wallets', async (req: AuthenticatedRequest, res) => {
     }
 
     const wallet = await createWalletForUser(userId, parseResult.data);
+    await markBudgetStale(userId);
     res.status(201).json({ success: true, wallet });
   } catch (err: any) {
     res.status(500).json({ error: 'Failed to create wallet', details: err.message });
@@ -294,6 +346,7 @@ router.post('/installments', async (req: AuthenticatedRequest, res) => {
     }
 
     const installment = await installmentRepository.saveInstallment(userId, parseResult.data as any);
+    await markBudgetStale(userId);
     res.status(201).json({ success: true, installment });
   } catch (err: any) {
     res.status(500).json({ error: 'Failed to save installment', details: err.message });
@@ -307,6 +360,7 @@ router.delete('/installments/:id', async (req: AuthenticatedRequest, res) => {
     if (!success) {
       return res.status(404).json({ error: 'Installment not found' });
     }
+    await markBudgetStale(userId);
     res.json({ success: true, id: req.params.id });
   } catch (err: any) {
     res.status(500).json({ error: 'Failed to delete installment', details: err.message });
@@ -343,6 +397,7 @@ router.post('/transactions', idempotencyMiddleware as any, async (req: Authentic
     }
 
     const transaction = await transactionRepository.createTransaction(userId, parseResult.data);
+    await markBudgetStale(userId);
     res.status(201).json({ success: true, transaction });
   } catch (err: any) {
     const errMsg = err.message || '';
@@ -364,6 +419,7 @@ router.delete('/transactions/:id', async (req: AuthenticatedRequest, res) => {
     if (!success) {
       return res.status(404).json({ error: 'Transaction not found' });
     }
+    await markBudgetStale(userId);
     res.json({ success: true, id: txId });
   } catch (err: any) {
     res.status(500).json({ error: 'Failed to delete transaction', details: err.message });
@@ -376,7 +432,71 @@ router.get('/budgets/current', async (req: AuthenticatedRequest, res) => {
     const userId = req.user!.uid;
     const monthKey = new Date().toISOString().slice(0, 7);
     const budget = await budgetRepository.getBudget(userId, monthKey);
-    res.json({ success: true, budget });
+    
+    if (budget) {
+      function getCategoryColor(cat: string): string {
+        switch (cat) {
+          case 'Food & Groceries': return '#10B981';
+          case 'Housing & Utilities': return '#0EA5E9';
+          case 'Transport & Ride Apps': return '#F59E0B';
+          case 'Installments & Debt': return '#F43F5E';
+          case 'Health & Education': return '#3B82F6';
+          case 'Family & Allowances': return '#6366F1';
+          case 'Shopping & Entertainment': return '#8B5CF6';
+          case 'Emergency & Savings': return '#14B8A6';
+          default: return '#6B7280';
+        }
+      }
+
+      function getCategoryIconName(cat: string): string {
+        switch (cat) {
+          case 'Food & Groceries': return 'ShoppingBag';
+          case 'Housing & Utilities': return 'Home';
+          case 'Transport & Ride Apps': return 'Car';
+          case 'Installments & Debt': return 'CreditCard';
+          case 'Health & Education': return 'HeartPulse';
+          case 'Family & Allowances': return 'UserCheck';
+          case 'Shopping & Entertainment': return 'Coffee';
+          case 'Emergency & Savings': return 'TrendingUp';
+          default: return 'ShieldAlert';
+        }
+      }
+
+      const responseBudget: any = { ...budget };
+      if (responseBudget.generatedAt && typeof (responseBudget.generatedAt as any).toDate === 'function') {
+        responseBudget.generatedAt = (responseBudget.generatedAt as any).toDate().toISOString() as any;
+      }
+      if (responseBudget.lastCalculatedAt && typeof (responseBudget.lastCalculatedAt as any).toDate === 'function') {
+        responseBudget.lastCalculatedAt = (responseBudget.lastCalculatedAt as any).toDate().toISOString() as any;
+      }
+
+      const responseCategories = (responseBudget.categories || []).map((cat: any) => {
+        const catKey = cat.categoryKey || cat.category || '';
+        return {
+          categoryKey: catKey,
+          category: catKey,
+          categoryAr: cat.categoryAr,
+          name: cat.categoryAr,
+          allocatedAmount: cat.allocatedAmount,
+          amount: cat.allocatedAmount,
+          spentAmount: cat.spentAmount || 0,
+          remainingAmount: typeof cat.remainingAmount === 'number' ? cat.remainingAmount : (cat.allocatedAmount - (cat.spentAmount || 0)),
+          percentageOfFlexiblePool: cat.percentageOfFlexiblePool || 0,
+          status: cat.status || 'SAFE',
+          color: cat.color || getCategoryColor(catKey),
+          icon: cat.icon || getCategoryIconName(catKey),
+        };
+      });
+
+      responseBudget.categories = responseCategories;
+
+      res.json({
+        success: true,
+        budget: responseBudget
+      });
+    } else {
+      res.json({ success: true, budget: null });
+    }
   } catch (err: any) {
     res.status(500).json({ error: 'Failed to fetch current budget', details: err.message });
   }
@@ -619,6 +739,7 @@ router.post('/debts', async (req: AuthenticatedRequest, res) => {
   try {
     const userId = req.user!.uid;
     const debt = await createDebt(userId, req.body);
+    await markBudgetStale(userId);
     res.status(201).json({ success: true, debt });
   } catch (err: any) {
     mapErrorToResponse(res, err, 'Failed to create debt');
@@ -648,6 +769,7 @@ router.post('/debts/:id/pay', async (req: AuthenticatedRequest, res) => {
       return res.status(400).json({ error: 'مبلغ الدفع مطلوب' });
     }
     const result = await recordDebtPayment(userId, req.params.id, amount, paymentMethod, date, idempotencyKey);
+    await markBudgetStale(userId);
     res.json({ success: true, ...result });
   } catch (err: any) {
     mapErrorToResponse(res, err, 'Failed to record debt payment');
@@ -658,6 +780,7 @@ router.post('/debts/:id/archive', async (req: AuthenticatedRequest, res) => {
   try {
     const userId = req.user!.uid;
     await archiveDebt(userId, req.params.id);
+    await markBudgetStale(userId);
     res.json({ success: true, id: req.params.id });
   } catch (err: any) {
     mapErrorToResponse(res, err, 'Failed to archive debt');
@@ -689,6 +812,7 @@ router.post('/obligations', async (req: AuthenticatedRequest, res) => {
   try {
     const userId = req.user!.uid;
     const obligation = await createObligation(userId, req.body);
+    await markBudgetStale(userId);
     res.status(201).json({ success: true, obligation });
   } catch (err: any) {
     mapErrorToResponse(res, err, 'Failed to create obligation');
@@ -699,6 +823,7 @@ router.patch('/obligations/:id', async (req: AuthenticatedRequest, res) => {
   try {
     const userId = req.user!.uid;
     const obligation = await updateObligation(userId, req.params.id, req.body);
+    await markBudgetStale(userId);
     res.json({ success: true, obligation });
   } catch (err: any) {
     mapErrorToResponse(res, err, 'Failed to update obligation');
@@ -709,6 +834,7 @@ router.post('/obligations/:id/pause', async (req: AuthenticatedRequest, res) => 
   try {
     const userId = req.user!.uid;
     await pauseObligation(userId, req.params.id);
+    await markBudgetStale(userId);
     res.json({ success: true, id: req.params.id });
   } catch (err: any) {
     mapErrorToResponse(res, err, 'Failed to pause obligation');
@@ -719,6 +845,7 @@ router.post('/obligations/:id/resume', async (req: AuthenticatedRequest, res) =>
   try {
     const userId = req.user!.uid;
     await resumeObligation(userId, req.params.id);
+    await markBudgetStale(userId);
     res.json({ success: true, id: req.params.id });
   } catch (err: any) {
     mapErrorToResponse(res, err, 'Failed to resume obligation');
@@ -729,6 +856,7 @@ router.post('/obligations/:id/complete', async (req: AuthenticatedRequest, res) 
   try {
     const userId = req.user!.uid;
     await completeObligation(userId, req.params.id);
+    await markBudgetStale(userId);
     res.json({ success: true, id: req.params.id });
   } catch (err: any) {
     mapErrorToResponse(res, err, 'Failed to complete obligation');
@@ -739,6 +867,7 @@ router.post('/obligations/:id/archive', async (req: AuthenticatedRequest, res) =
   try {
     const userId = req.user!.uid;
     await archiveObligation(userId, req.params.id);
+    await markBudgetStale(userId);
     res.json({ success: true, id: req.params.id });
   } catch (err: any) {
     mapErrorToResponse(res, err, 'Failed to archive obligation');
@@ -749,6 +878,7 @@ router.delete('/obligations/:id', async (req: AuthenticatedRequest, res) => {
   try {
     const userId = req.user!.uid;
     await deleteObligation(userId, req.params.id);
+    await markBudgetStale(userId);
     res.json({ success: true, id: req.params.id });
   } catch (err: any) {
     mapErrorToResponse(res, err, 'Failed to delete obligation');

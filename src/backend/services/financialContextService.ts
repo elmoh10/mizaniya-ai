@@ -58,16 +58,136 @@ export interface TrustedFinancialContext {
   monthlyObligations: number;
   debtToIncomeRatio: number;
   obligations?: any[];
+  outstandingMonthlyCommitments: number;
+  committedMonthlyTotal: number;
+  targetSavingsAmount: number;
+  remainingSavingsTarget: number;
+  safeToSpend: number;
+  unpaidBillsThisMonthTotal: number;
+}
+
+export function parseLocalDate(dateStr: string | undefined): Date | null {
+  if (!dateStr) return null;
+  const match = dateStr.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!match) {
+    const d = new Date(dateStr);
+    return isNaN(d.getTime()) ? null : d;
+  }
+  const year = parseInt(match[1], 10);
+  const month = parseInt(match[2], 10) - 1; // 0-indexed
+  const day = parseInt(match[3], 10);
+  return new Date(year, month, day);
+}
+
+export function getObligationAmountDueForMonth(
+  ob: any,
+  monthKey: string
+): { amount: number; warning?: string } {
+  const startDate = parseLocalDate(ob.startDate || ob.dueDate);
+  if (!startDate) {
+    return { amount: 0, warning: `الالتزام "${ob.name}" ليس لديه تاريخ بدء صالح.` };
+  }
+
+  const [yearStr, monthStr] = monthKey.split('-');
+  const targetYear = parseInt(yearStr, 10);
+  const targetMonth = parseInt(monthStr, 10) - 1; // 0-indexed
+
+  const startOfTargetMonth = new Date(targetYear, targetMonth, 1);
+  const endOfTargetMonth = new Date(targetYear, targetMonth + 1, 0);
+
+  const endDate = parseLocalDate(ob.endDate);
+
+  // General boundary checks
+  if (endOfTargetMonth < startDate) {
+    return { amount: 0 };
+  }
+  if (endDate && startOfTargetMonth > endDate) {
+    return { amount: 0 };
+  }
+
+  const rangeStart = startDate > startOfTargetMonth ? startDate : startOfTargetMonth;
+  const rangeEnd = endDate && endDate < endOfTargetMonth ? endDate : endOfTargetMonth;
+
+  if (rangeStart > rangeEnd) {
+    return { amount: 0 };
+  }
+
+  const frequency = (ob.frequency || 'MONTHLY').toUpperCase();
+
+  if (frequency === 'MONTHLY') {
+    return { amount: ob.amount || 0 };
+  }
+
+  if (frequency === 'WEEKLY') {
+    const targetDayOfWeek = startDate.getDay(); // 0-6
+    let occurrences = 0;
+    const current = new Date(rangeStart.getFullYear(), rangeStart.getMonth(), rangeStart.getDate());
+    const endLimit = new Date(rangeEnd.getFullYear(), rangeEnd.getMonth(), rangeEnd.getDate());
+    while (current <= endLimit) {
+      if (current.getDay() === targetDayOfWeek) {
+        occurrences++;
+      }
+      current.setDate(current.getDate() + 1);
+    }
+    return { amount: (ob.amount || 0) * occurrences };
+  }
+
+  if (frequency === 'QUARTERLY') {
+    const monthsDiff = (targetYear - startDate.getFullYear()) * 12 + (targetMonth - startDate.getMonth());
+    if (monthsDiff >= 0 && monthsDiff % 3 === 0) {
+      return { amount: ob.amount || 0 };
+    }
+    return { amount: 0 };
+  }
+
+  if (frequency === 'YEARLY') {
+    if (targetYear >= startDate.getFullYear() && targetMonth === startDate.getMonth()) {
+      return { amount: ob.amount || 0 };
+    }
+    return { amount: 0 };
+  }
+
+  if (frequency === 'CUSTOM') {
+    const dates = ob.customDates || ob.scheduledDates || [];
+    if (Array.isArray(dates) && dates.length > 0) {
+      let totalAmount = 0;
+      for (const dStr of dates) {
+        const d = parseLocalDate(dStr);
+        if (d && d >= startDate && (!endDate || d <= endDate)) {
+          if (d.getFullYear() === targetYear && d.getMonth() === targetMonth) {
+            totalAmount += ob.amount || 0;
+          }
+        }
+      }
+      return { amount: totalAmount };
+    }
+    return {
+      amount: 0,
+      warning: `الالتزام الكاستم "${ob.name}" لا يحتوي على جدول تواريخ محدد.`
+    };
+  }
+
+  return { amount: 0, warning: `الالتزام "${ob.name}" لديه تواتر غير معروف: ${frequency}` };
 }
 
 export async function getTrustedFinancialContext(userId: string): Promise<TrustedFinancialContext> {
   const userDocRef = db.collection('users').doc(userId);
   const monthKey = new Date().toISOString().slice(0, 7);
 
+  // Calculate current month bounds
+  const now = new Date();
+  const currentYear = now.getFullYear();
+  const currentMonthNum = now.getMonth(); // 0-indexed
+  const currentMonthStart = `${currentYear}-${String(currentMonthNum + 1).padStart(2, '0')}-01`;
+  const nextMonthYear = currentMonthNum === 11 ? currentYear + 1 : currentYear;
+  const nextMonthNum = currentMonthNum === 11 ? 1 : currentMonthNum + 2;
+  const nextMonthStart = `${nextMonthYear}-${String(nextMonthNum).padStart(2, '0')}-01`;
+
   const [
     userDoc,
     walletsSnap,
     txsSnap,
+    txsCurrentMonthSnap,
     budgetDoc,
     goalsSnap,
     billsSnap,
@@ -79,6 +199,10 @@ export async function getTrustedFinancialContext(userId: string): Promise<Truste
     userDocRef.get(),
     userDocRef.collection('wallets').get(),
     userDocRef.collection('transactions').orderBy('date', 'desc').limit(100).get(),
+    userDocRef.collection('transactions')
+      .where('date', '>=', currentMonthStart)
+      .where('date', '<', nextMonthStart)
+      .get(),
     userDocRef.collection('budgets').doc(monthKey).get(),
     userDocRef.collection('goals').get(),
     userDocRef.collection('bills').get(),
@@ -90,9 +214,21 @@ export async function getTrustedFinancialContext(userId: string): Promise<Truste
 
   const userProfile = userDoc.exists ? userDoc.data() : {};
   const wallets = walletsSnap.docs.map((d) => ({ id: d.id, ...d.data() } as Wallet));
-  const recentTransactions = txsSnap.docs
+
+  const recentTransactionsRaw = txsSnap.docs
     .map((d) => ({ id: d.id, ...d.data() } as Transaction & { isDeleted?: boolean }))
     .filter((tx) => !tx.isDeleted);
+
+  const currentMonthTransactionsRaw = txsCurrentMonthSnap.docs
+    .map((d) => ({ id: d.id, ...d.data() } as Transaction & { isDeleted?: boolean }))
+    .filter((tx) => !tx.isDeleted);
+
+  // Merge and deduplicate to ensure ALL current month's transactions are present
+  const txMap = new Map<string, Transaction & { isDeleted?: boolean }>();
+  recentTransactionsRaw.forEach(tx => txMap.set(tx.id, tx));
+  currentMonthTransactionsRaw.forEach(tx => txMap.set(tx.id, tx));
+  const recentTransactions = Array.from(txMap.values());
+
   const currentBudget = budgetDoc.exists ? (budgetDoc.data() as Budget) : undefined;
   const goals = goalsSnap.docs.map((d) => ({ id: d.id, ...d.data() } as Goal));
   const bills = billsSnap.docs.map((d) => ({ id: d.id, ...d.data() } as Bill));
@@ -109,15 +245,23 @@ export async function getTrustedFinancialContext(userId: string): Promise<Truste
   const unpaidBillsTotal = unpaidBills.reduce((acc, b) => acc + (b.amount || 0), 0);
 
   const activeInstallments = installments.filter((i) => i.status === 'ACTIVE');
-  const installmentDebtTotal = activeInstallments.reduce((acc, i) => acc + (i.remainingAmount || 0), 0);
+  const activeDebts = debts.filter((d: any) => d.status === 'ACTIVE' || d.status === 'active' || d.status === 'OVERDUE' || d.status === 'PAUSED');
+
+  const processedDebtIds = new Set<string>();
+  activeDebts.forEach((d: any) => processedDebtIds.add(d.id));
+
+  const uniqueLegacyInstallmentsRemaining = activeInstallments
+    .filter((inst) => !(inst.debtId && processedDebtIds.has(inst.debtId)))
+    .reduce((acc, i) => acc + (i.remainingAmount || 0), 0);
+
+  const installmentDebtTotal = uniqueLegacyInstallmentsRemaining;
 
   // New specific properties for Debts & Monthly Obligations Module
-  const activeDebts = debts.filter((d: any) => d.status === 'ACTIVE' || d.status === 'active' || d.status === 'OVERDUE' || d.status === 'PAUSED');
   const totalDebtRemaining = activeDebts.reduce((acc, d: any) => acc + (d.remainingAmount || 0), 0);
   const monthlyDebtPayments = activeDebts.reduce((acc, d: any) => acc + (d.minimumPayment || 0), 0);
 
   const activeObligations = obligations.filter((o: any) => o.status === 'ACTIVE' || o.status === 'active');
-  const monthlyObligations = activeObligations.reduce((acc, o: any) => acc + (o.amount || 0), 0);
+  const monthlyObligations = activeObligations.reduce((acc, o: any) => acc + getObligationAmountDueForMonth(o, monthKey).amount, 0);
 
   const debtToIncomeRatio = Math.round(((monthlyDebtPayments + monthlyObligations) / (salary || 1)) * 100 * 10) / 10;
 
@@ -125,7 +269,11 @@ export async function getTrustedFinancialContext(userId: string): Promise<Truste
   const activeDebtsTotal = activeDebts.reduce((acc, d: any) => acc + (d.remainingAmount || 0), 0);
   const debtsTotal = installmentDebtTotal + activeDebtsTotal;
 
-  const monthlyInstallmentObligation = activeInstallments.reduce((acc, i) => acc + (i.monthlyPayment || 0), 0) + monthlyDebtPayments;
+  const uniqueLegacyInstallmentsPayment = activeInstallments
+    .filter((inst) => !(inst.debtId && processedDebtIds.has(inst.debtId)))
+    .reduce((acc, i) => acc + (i.monthlyPayment || 0), 0);
+
+  const monthlyInstallmentObligation = uniqueLegacyInstallmentsPayment + monthlyDebtPayments;
 
   const currentMonthExpenses = recentTransactions
     .filter((tx) => tx.type === 'expense' && (tx.date || '').startsWith(monthKey))
@@ -161,8 +309,15 @@ export async function getTrustedFinancialContext(userId: string): Promise<Truste
     })
     .reduce((acc, b) => acc + (b.amount || 0), 0);
 
-  const outstandingCommitments = calculateOutstandingMonthlyCommitments(debts, obligations, recentTransactions, monthKey);
+  const outstandingCommitments = calculateOutstandingMonthlyCommitments(debts, obligations, recentTransactions, monthKey, installments);
   const availableBalance = calculateAvailableBalance(salary, currentMonthExpenses, unpaidBillsThisMonthTotal, outstandingCommitments);
+
+  const outstandingMonthlyCommitments = outstandingCommitments;
+  const committedMonthlyTotal = unpaidBillsThisMonthTotal + outstandingMonthlyCommitments;
+  const targetSavingsPercent = currentBudget?.targetSavingsPercent || currentBudget?.savingsTargetPercent || 20;
+  const targetSavingsAmount = Math.round(salary * (targetSavingsPercent / 100));
+  const remainingSavingsTarget = Math.max(0, targetSavingsAmount - monthlySavings);
+  const safeToSpend = Math.max(0, availableBalance - remainingSavingsTarget);
 
   const walletBalances = wallets.map((w) => ({
     name: w.nameAr || w.name,
@@ -274,6 +429,12 @@ export async function getTrustedFinancialContext(userId: string): Promise<Truste
     monthlyObligations,
     debtToIncomeRatio,
     obligations,
+    outstandingMonthlyCommitments,
+    committedMonthlyTotal,
+    targetSavingsAmount,
+    remainingSavingsTarget,
+    safeToSpend,
+    unpaidBillsThisMonthTotal,
   };
 }
 
@@ -281,19 +442,24 @@ export function calculateOutstandingMonthlyCommitments(
   debts: any[],
   obligations: any[],
   transactions: Transaction[],
-  monthKey: string
+  monthKey: string,
+  installments?: any[]
 ): number {
   const activeDebts = debts.filter((d) => d.status === 'ACTIVE' || d.status === 'active' || d.status === 'OVERDUE' || d.status === 'PAUSED');
   const activeObligations = obligations.filter((o) => o.status === 'ACTIVE' || o.status === 'active');
+  const activeInstallments = (installments || []).filter((i) => i.status === 'ACTIVE' || i.status === 'active');
 
   const currentMonthTxs = transactions.filter((tx) => (tx.date || '').startsWith(monthKey) && tx.type === 'expense');
 
   let outstanding = 0;
+  const processedDebtIds = new Set<string>();
 
   // 1. Debts
   for (const debt of activeDebts) {
     const minPay = Number(debt.minimumPayment || 0);
     if (minPay <= 0) continue;
+
+    processedDebtIds.add(debt.id);
 
     const paymentsThisMonth = currentMonthTxs
       .filter((tx) => tx.relatedDebtId === debt.id)
@@ -302,13 +468,34 @@ export function calculateOutstandingMonthlyCommitments(
     outstanding += Math.max(0, minPay - paymentsThisMonth);
   }
 
+  // 1b. Legacy Active Installments
+  for (const inst of activeInstallments) {
+    const monthlyPay = Number(inst.monthlyPayment || 0);
+    if (monthlyPay <= 0) continue;
+
+    if (inst.debtId && processedDebtIds.has(inst.debtId)) {
+      continue;
+    }
+
+    const paymentsThisMonth = currentMonthTxs
+      .filter((tx) => {
+        if (tx.relatedInstallmentId === inst.id) return true;
+        if (inst.debtId && tx.relatedDebtId === inst.debtId) return true;
+        return false;
+      })
+      .reduce((acc, tx) => acc + (tx.amount || 0), 0);
+
+    outstanding += Math.max(0, monthlyPay - paymentsThisMonth);
+  }
+
   // 2. Obligations
   for (const ob of activeObligations) {
-    const amount = Number(ob.amount || 0);
+    const dueInfo = getObligationAmountDueForMonth(ob, monthKey);
+    const amount = dueInfo.amount;
     if (amount <= 0) continue;
 
     const paymentsThisMonth = currentMonthTxs
-      .filter((tx) => tx.relatedObligationId === ob.id || tx.relatedDebtId === ob.id)
+      .filter((tx) => tx.relatedObligationId === ob.id)
       .reduce((acc, tx) => acc + (tx.amount || 0), 0);
 
     outstanding += Math.max(0, amount - paymentsThisMonth);
@@ -321,18 +508,22 @@ export function calculatePaidCommitmentsThisMonth(
   debts: any[],
   obligations: any[],
   transactions: Transaction[],
-  monthKey: string
+  monthKey: string,
+  installments?: any[]
 ): number {
   const activeDebts = debts.filter((d) => d.status === 'ACTIVE' || d.status === 'active' || d.status === 'OVERDUE' || d.status === 'PAUSED');
   const activeObligations = obligations.filter((o) => o.status === 'ACTIVE' || o.status === 'active');
+  const activeInstallments = (installments || []).filter((i) => i.status === 'ACTIVE' || i.status === 'active');
 
   const currentMonthTxs = transactions.filter((tx) => (tx.date || '').startsWith(monthKey) && tx.type === 'expense');
 
   let paid = 0;
+  const processedDebtIds = new Set<string>();
 
   // Debts
   for (const debt of activeDebts) {
     const minPay = Number(debt.minimumPayment || 0);
+    processedDebtIds.add(debt.id);
     const paymentsThisMonth = currentMonthTxs
       .filter((tx) => tx.relatedDebtId === debt.id)
       .reduce((acc, tx) => acc + (tx.amount || 0), 0);
@@ -340,11 +531,34 @@ export function calculatePaidCommitmentsThisMonth(
     paid += Math.min(minPay, paymentsThisMonth);
   }
 
+  // Legacy Active Installments
+  for (const inst of activeInstallments) {
+    const monthlyPay = Number(inst.monthlyPayment || 0);
+    if (monthlyPay <= 0) continue;
+
+    if (inst.debtId && processedDebtIds.has(inst.debtId)) {
+      continue;
+    }
+
+    const paymentsThisMonth = currentMonthTxs
+      .filter((tx) => {
+        if (tx.relatedInstallmentId === inst.id) return true;
+        if (inst.debtId && tx.relatedDebtId === inst.debtId) return true;
+        return false;
+      })
+      .reduce((acc, tx) => acc + (tx.amount || 0), 0);
+
+    paid += Math.min(monthlyPay, paymentsThisMonth);
+  }
+
   // Obligations
   for (const ob of activeObligations) {
-    const amount = Number(ob.amount || 0);
+    const dueInfo = getObligationAmountDueForMonth(ob, monthKey);
+    const amount = dueInfo.amount;
+    if (amount <= 0) continue;
+
     const paymentsThisMonth = currentMonthTxs
-      .filter((tx) => tx.relatedObligationId === ob.id || tx.relatedDebtId === ob.id)
+      .filter((tx) => tx.relatedObligationId === ob.id)
       .reduce((acc, tx) => acc + (tx.amount || 0), 0);
 
     paid += Math.min(amount, paymentsThisMonth);
