@@ -41,6 +41,23 @@ export interface SmartBudgetPlan {
 }
 
 let aiClient: GoogleGenAI | null = null;
+const AI_REQUEST_TIMEOUT_MS = 20000;
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  let timer: any = null;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      reject(new Error('AI Request timeout'));
+    }, timeoutMs);
+  });
+
+  return Promise.race([promise, timeoutPromise]).finally(() => {
+    if (timer) {
+      clearTimeout(timer);
+    }
+  });
+}
+
 function getAIClient(customClient?: GoogleGenAI | null): GoogleGenAI | null {
   if (customClient) return customClient;
   if (!aiClient && process.env.GEMINI_API_KEY) {
@@ -163,11 +180,7 @@ async function getAIFlexibleAllocations(flexibleSpendingPool: number, customClie
       },
     }).then(res => res.text ? JSON.parse(res.text.trim()) : null);
 
-    const timeoutPromise = new Promise<any>((_, reject) =>
-      setTimeout(() => reject(new Error('AI Request timeout')), 4000)
-    );
-
-    const parsed = await Promise.race([responsePromise, timeoutPromise]);
+    const parsed = await withTimeout(responsePromise, AI_REQUEST_TIMEOUT_MS);
     return validateAIFlexibleAllocations(parsed, flexibleSpendingPool);
   } catch (err) {
     console.error('Error getting AI flexible allocations:', err);
@@ -185,17 +198,16 @@ async function generateAICoachAdvice(plan: Omit<SmartBudgetPlan, 'aiAdvice'>, cu
 أنت "كوتش مالي مصري" ذكي وودود جداً. تراجع خطة الميزانية التالية لمستخدم في مصر، وتقدم له نصيحة مخصصة ومبتكرة (في 2-3 جمل قصيرة بلهجة مصرية عامية ممتازة):
 
 تفاصيل الميزانية:
-- إجمالي الراتب الشهري: ${plan.salary} ج.م
+- الراتب: ${plan.salary} ج.م
 - المصروف حتى الآن: ${plan.alreadySpent} ج.م
-- إجمالي الالتزامات المتبقية: ${plan.totalCommittedRemaining} ج.م (فواتير: ${plan.unpaidBills}، أقساط ديون: ${plan.outstandingDebtPayments}، التزامات نشطة: ${plan.outstandingObligations})
-- هدف الادخار: ${plan.savingsTargetAmount} ج.م (الحالة: ${plan.savingsFeasibility === 'NOT_FEASIBLE' ? 'غير ممكن بالكامل وتم تعديله ليناسب الالتزامات' : 'ممكن وقابل للتحقيق'})
-- المتاح للإنفاق المرن: ${plan.flexibleSpendingPool} ج.م
-- التوقعات لنهاية الشهر: ${plan.projectedEndOfMonthBalance} ج.م
+- الالتزامات المتبقية: ${plan.totalCommittedRemaining} ج.م
+- هدف الادخار: ${plan.savingsTargetAmount} ج.م (الحالة: ${plan.savingsFeasibility === 'NOT_FEASIBLE' ? 'غير ممكن وتم تعديله' : 'ممكن'})
+- الإنفاق المرن المتاح: ${plan.flexibleSpendingPool} ج.م
+- رصيد نهاية الشهر المتوقع: ${plan.projectedEndOfMonthBalance} ج.م
+- نسبة الالتزام: ${plan.commitmentRatio}%
+- تحذيرات الميزانية: ${plan.warnings.join(' | ') || 'لا يوجد تحذيرات'}
 
-الفئات المقسمة:
-${plan.categories.map(c => `- ${c.categoryAr}: مخصص له ${c.allocatedAmount} ج.م، صرف منه ${c.spentAmount} ج.م`).join('\n')}
-
-قدم نصيحة مشجعة وعملية جداً بالعامية المصرية الودودة، ركز فيها على الاستهلاك والالتزامات والتوفير والتحكم بالكاش، دون اقتراح أي نوع من أنواع الاستثمار الإلزامية مثل الذهب أو البورصة أو شهادات الادخار (إلا إذا طلب المستخدم ذلك، وهنا هو لم يطلب).
+قدم نصيحة مشجعة وعملية جداً بالعامية المصرية الودودة، ركز فيها على الاستهلاك والتوفير والتحكم بمصاريفك، دون اقتراح أي نوع من أنواع الاستثمار الإلزامية مثل الذهب أو البورصة أو شهادات الادخار.
   `;
 
   try {
@@ -204,11 +216,7 @@ ${plan.categories.map(c => `- ${c.categoryAr}: مخصص له ${c.allocatedAmount
       contents: prompt,
     }).then(res => res.text ? res.text.trim() : '');
 
-    const timeoutPromise = new Promise<string>((_, reject) =>
-      setTimeout(() => reject(new Error('AI Request timeout')), 4000)
-    );
-
-    const advice = await Promise.race([advicePromise, timeoutPromise]);
+    const advice = await withTimeout(advicePromise, AI_REQUEST_TIMEOUT_MS);
     return advice || 'بناءً على حساباتنا، خطتك متوازنة تماماً هذا الشهر. التزم بتقسيم الإنفاق المرن لتحقيق كامل أهدافك.';
   } catch (err) {
     console.error('Error generating AI coach advice for budget:', err);
