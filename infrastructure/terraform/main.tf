@@ -1,7 +1,8 @@
 # MIZANIYA AI — Staging/Production GCP Infrastructure
 #
-# Firestore, Artifact Registry and the Gemini Secret are intentionally treated
-# as externally bootstrapped resources to avoid duplicate-ownership conflicts.
+# Firestore, Artifact Registry, Gemini Secret, and Telegram Bot Secret
+# are intentionally treated as externally bootstrapped resources to
+# avoid duplicate-ownership conflicts.
 
 terraform {
   required_version = ">= 1.15.0, < 1.16.0"
@@ -92,8 +93,8 @@ resource "google_project_service" "required_services" {
 # Gemini Secret
 # ============================================================
 #
-# The Secret Manager secret "gemini-api-key" and its first enabled
-# secret version are bootstrapped outside this Terraform module.
+# The Secret Manager secret "gemini-api-key" and its enabled
+# secret versions are bootstrapped outside this Terraform module.
 #
 # Terraform only reads the existing secret and grants the runtime
 # service account permission to access it.
@@ -101,6 +102,25 @@ resource "google_project_service" "required_services" {
 data "google_secret_manager_secret" "gemini_api_key" {
   project   = var.gcp_project_id
   secret_id = "gemini-api-key"
+
+  depends_on = [
+    google_project_service.required_services
+  ]
+}
+
+# ============================================================
+# Telegram Bot Secret
+# ============================================================
+#
+# The Secret Manager secret "telegram-bot-token" is bootstrapped
+# outside this Terraform module.
+#
+# Terraform only reads the existing secret and grants the runtime
+# service account permission to access it.
+
+data "google_secret_manager_secret" "telegram_bot_token" {
+  project   = var.gcp_project_id
+  secret_id = "telegram-bot-token"
 
   depends_on = [
     google_project_service.required_services
@@ -180,6 +200,13 @@ resource "google_secret_manager_secret_iam_member" "gemini_key_accessor" {
   member    = "serviceAccount:${google_service_account.app_sa.email}"
 }
 
+resource "google_secret_manager_secret_iam_member" "telegram_bot_token_accessor" {
+  project   = var.gcp_project_id
+  secret_id = data.google_secret_manager_secret.telegram_bot_token.secret_id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.app_sa.email}"
+}
+
 # ============================================================
 # 4. Memorystore Redis
 # ============================================================
@@ -225,7 +252,7 @@ resource "google_cloud_tasks_queue" "async_tasks" {
 }
 
 resource "google_bigquery_dataset" "analytics" {
-  dataset_id = "mizaniya_analytics_${var.environment}"
+  dataset_id  = "mizaniya_analytics_${var.environment}"
   description = "Anonymized Mizaniya AI Product Analytics (${var.environment})"
   location    = "EU"
 
@@ -262,6 +289,7 @@ resource "google_cloud_run_v2_service" "mizaniya_app" {
     google_redis_instance.cache,
     google_vpc_access_connector.vpc_connector,
     google_secret_manager_secret_iam_member.gemini_key_accessor,
+    google_secret_manager_secret_iam_member.telegram_bot_token_accessor,
     google_project_iam_member.firestore_user,
     google_project_iam_member.pubsub_publisher,
     google_project_iam_member.cloudtasks_enqueuer,
@@ -335,12 +363,31 @@ resource "google_cloud_run_v2_service" "mizaniya_app" {
         value = tostring(google_redis_instance.cache.port)
       }
 
+      # ======================================================
+      # Gemini API Secret
+      # ======================================================
+
       env {
         name = "GEMINI_API_KEY"
 
         value_source {
           secret_key_ref {
             secret  = data.google_secret_manager_secret.gemini_api_key.secret_id
+            version = "latest"
+          }
+        }
+      }
+
+      # ======================================================
+      # Telegram Bot Secret
+      # ======================================================
+
+      env {
+        name = "TELEGRAM_BOT_TOKEN"
+
+        value_source {
+          secret_key_ref {
+            secret  = data.google_secret_manager_secret.telegram_bot_token.secret_id
             version = "latest"
           }
         }
