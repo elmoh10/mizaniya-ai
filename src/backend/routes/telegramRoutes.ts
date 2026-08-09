@@ -1,6 +1,14 @@
 import { Router, Request, Response } from 'express';
+import { createHash, randomInt } from 'crypto';
+import { db } from '../config/firebaseAdmin';
 
 const router = Router();
+
+const LINK_CODE_EXPIRY_MINUTES = 10;
+
+// ============================================================
+// Helpers
+// ============================================================
 
 async function sendTelegramMessage(
   chatId: number,
@@ -28,10 +36,21 @@ async function sendTelegramMessage(
 
   if (!response.ok) {
     const errorText = await response.text();
+
     throw new Error(
       `Telegram sendMessage failed: ${response.status} ${errorText}`
     );
   }
+}
+
+function generateLinkCode(): string {
+  return randomInt(100000, 1000000).toString();
+}
+
+function hashLinkCode(code: string): string {
+  return createHash('sha256')
+    .update(code)
+    .digest('hex');
 }
 
 // ============================================================
@@ -58,14 +77,19 @@ router.post('/webhook', async (req: Request, res: Response) => {
     }
 
     const chatId = message.chat?.id;
+    const telegramUserId = message.from?.id;
     const text = message.text?.trim();
 
-    if (!chatId) {
+    if (!chatId || !telegramUserId) {
       return res.status(200).json({
         success: true,
         received: true,
       });
     }
+
+    // ========================================================
+    // /start
+    // ========================================================
 
     if (text === '/start') {
       await sendTelegramMessage(
@@ -74,24 +98,105 @@ router.post('/webhook', async (req: Request, res: Response) => {
 
 أنا المساعد المالي الذكي الخاص بيك.
 
-قريباً هتقدر من خلالي:
-💰 تسجل مصروفاتك
-📊 تعرف المتبقي من مرتبك
-🎯 تتابع ميزانيتك
-💳 تراجع ديونك والتزاماتك
-🧠 تتكلم مع المستشار المالي AI
+علشان أقدر أوصل لميزانيتك ومصاريفك وديونك بأمان، لازم تربط حساب Telegram بحساب Mizaniya AI.
 
-البوت متصل بنجاح بمنصة ميزانية AI ✅`
+اكتب:
+/link
+
+وهطلع لك كود ربط مؤقت 🔐`
       );
-    } else if (text) {
+
+      return res.status(200).json({
+        success: true,
+        received: true,
+      });
+    }
+
+    // ========================================================
+    // /link
+    // ========================================================
+
+    if (text === '/link') {
+      const code = generateLinkCode();
+      const codeHash = hashLinkCode(code);
+
+      const now = Date.now();
+      const expiresAt =
+        now + LINK_CODE_EXPIRY_MINUTES * 60 * 1000;
+
+      // Delete old pending link codes for this Telegram user
+      const oldCodesSnapshot = await db
+        .collection('telegram_link_codes')
+        .where('telegramUserId', '==', telegramUserId)
+        .where('used', '==', false)
+        .get();
+
+      const batch = db.batch();
+
+      oldCodesSnapshot.docs.forEach((doc) => {
+        batch.delete(doc.ref);
+      });
+
+      if (!oldCodesSnapshot.empty) {
+        await batch.commit();
+      }
+
+      // Store hashed code only.
+      // The plain 6-digit code is sent to Telegram but never stored.
+      await db
+        .collection('telegram_link_codes')
+        .doc(codeHash)
+        .set({
+          telegramUserId,
+          chatId,
+
+          telegramUsername:
+            message.from?.username || null,
+
+          telegramFirstName:
+            message.from?.first_name || null,
+
+          telegramLastName:
+            message.from?.last_name || null,
+
+          used: false,
+
+          createdAt: now,
+          expiresAt,
+        });
+
+      await sendTelegramMessage(
+        chatId,
+        `🔐 كود ربط حساب Mizaniya AI:
+
+${code}
+
+الكود صالح لمدة ${LINK_CODE_EXPIRY_MINUTES} دقائق فقط.
+
+افتح موقع Mizaniya AI وسجّل دخولك، وبعدها هنستخدم الكود ده لربط حسابك.
+
+⚠️ ما تبعتش الكود لأي شخص.`
+      );
+
+      return res.status(200).json({
+        success: true,
+        received: true,
+      });
+    }
+
+    // ========================================================
+    // Temporary response for other messages
+    // ========================================================
+
+    if (text) {
       await sendTelegramMessage(
         chatId,
         `وصلتني رسالتك ✅
 
-قلتلي:
-"${text}"
+لكن حساب Telegram بتاعك لازم يتربط بحساب Mizaniya AI الأول.
 
-الاتصال بين Telegram و Mizaniya AI شغال بنجاح 🤖`
+اكتب:
+/link`
       );
     }
 
@@ -100,9 +205,12 @@ router.post('/webhook', async (req: Request, res: Response) => {
       received: true,
     });
   } catch (error: any) {
-    console.error('Telegram webhook error:', error);
+    console.error(
+      'Telegram webhook error:',
+      error
+    );
 
-    // Return 200 to avoid Telegram retry storms during early development
+    // Return 200 during Telegram processing to prevent retry storms.
     return res.status(200).json({
       success: false,
       error: error.message,
@@ -139,22 +247,29 @@ router.post('/setup', async (_req: Request, res: Response) => {
         body: JSON.stringify({
           url: webhookUrl,
           drop_pending_updates: true,
-          allowed_updates: ['message', 'callback_query'],
+          allowed_updates: [
+            'message',
+            'callback_query',
+          ],
         }),
       }
     );
 
-    const telegramData = await telegramResponse.json();
+    const telegramData =
+      await telegramResponse.json();
 
-    return res.status(
-      telegramResponse.ok ? 200 : 500
-    ).json({
-      success: telegramResponse.ok,
-      telegram: telegramData,
-      webhookUrl,
-    });
+    return res
+      .status(telegramResponse.ok ? 200 : 500)
+      .json({
+        success: telegramResponse.ok,
+        telegram: telegramData,
+        webhookUrl,
+      });
   } catch (error: any) {
-    console.error('Telegram setup error:', error);
+    console.error(
+      'Telegram setup error:',
+      error
+    );
 
     return res.status(500).json({
       success: false,
@@ -183,15 +298,21 @@ router.get('/info', async (_req: Request, res: Response) => {
       `https://api.telegram.org/bot${token}/getWebhookInfo`
     );
 
-    const telegramData = await telegramResponse.json();
+    const telegramData =
+      await telegramResponse.json();
 
-    return res.status(
-      telegramResponse.ok ? 200 : 500
-    ).json({
-      success: telegramResponse.ok,
-      telegram: telegramData,
-    });
+    return res
+      .status(telegramResponse.ok ? 200 : 500)
+      .json({
+        success: telegramResponse.ok,
+        telegram: telegramData,
+      });
   } catch (error: any) {
+    console.error(
+      'Telegram getWebhookInfo error:',
+      error
+    );
+
     return res.status(500).json({
       success: false,
       error: error.message,
@@ -204,12 +325,15 @@ router.get('/info', async (_req: Request, res: Response) => {
 // GET /telegram/health
 // ============================================================
 
-router.get('/health', (_req: Request, res: Response) => {
-  return res.status(200).json({
-    success: true,
-    service: 'Mizaniya AI Telegram Bot',
-    status: 'ready',
-  });
-});
+router.get(
+  '/health',
+  (_req: Request, res: Response) => {
+    return res.status(200).json({
+      success: true,
+      service: 'Mizaniya AI Telegram Bot',
+      status: 'ready',
+    });
+  }
+);
 
 export default router;
