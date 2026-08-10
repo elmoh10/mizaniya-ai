@@ -6,6 +6,7 @@ import { getTrustedFinancialContext } from '../services/financialContextService'
 import { transactionRepository } from '../repositories/transactionRepository';
 import { getWalletsForUser } from '../services/walletService';
 import { transactionCreateSchema } from '../validators/schemas';
+import { recordDebtPayment } from '../services/debtService';
 import { CategoryType } from '../../types';
 
 const router = Router();
@@ -172,7 +173,6 @@ function detectExpenseCategory(
   const normalized =
     normalizeArabicText(text);
 
-  // Transport
   if (
     normalized.includes('بنزين') ||
     normalized.includes('سولار') ||
@@ -186,7 +186,6 @@ function detectExpenseCategory(
     return 'Transport & Ride Apps';
   }
 
-  // Food
   if (
     normalized.includes('اكل') ||
     normalized.includes('مطعم') ||
@@ -201,7 +200,6 @@ function detectExpenseCategory(
     return 'Food & Groceries';
   }
 
-  // Bills / subscriptions
   if (
     normalized.includes('انترنت') ||
     normalized.includes('نت') ||
@@ -212,7 +210,6 @@ function detectExpenseCategory(
     return 'Bills & Subscriptions';
   }
 
-  // Housing
   if (
     normalized.includes('كهربا') ||
     normalized.includes('كهرباء') ||
@@ -224,7 +221,6 @@ function detectExpenseCategory(
     return 'Housing & Utilities';
   }
 
-  // Health / education
   if (
     normalized.includes('دواء') ||
     normalized.includes('صيدليه') ||
@@ -240,7 +236,6 @@ function detectExpenseCategory(
     return 'Health & Education';
   }
 
-  // Family
   if (
     normalized.includes('مصروف البيت') ||
     normalized.includes('الاولاد') ||
@@ -251,7 +246,6 @@ function detectExpenseCategory(
     return 'Family & Allowances';
   }
 
-  // Debt
   if (
     normalized.includes('قسط') ||
     normalized.includes('دين')
@@ -259,7 +253,6 @@ function detectExpenseCategory(
     return 'Installments & Debt';
   }
 
-  // Savings
   if (
     normalized.includes('ادخار') ||
     normalized.includes('تحويش') ||
@@ -447,6 +440,74 @@ function extractIncomeCandidate(
 }
 
 // ============================================================
+// Debt Payment Parser
+// ============================================================
+
+function extractDebtPaymentCandidate(
+  text: string
+): {
+  amount: number;
+  searchText: string;
+} | null {
+  const normalized =
+    normalizeArabicText(text);
+
+  const hasDebtPaymentIntent =
+    (
+      normalized.includes('دفعت') ||
+      normalized.includes('سددت') ||
+      normalized.includes('سداد')
+    ) &&
+    (
+      normalized.includes('دين') ||
+      normalized.includes('قسط') ||
+      normalized.includes('مديونيه')
+    );
+
+  if (!hasDebtPaymentIntent) {
+    return null;
+  }
+
+  const amountMatch =
+    text.match(/(\d+(?:[.,]\d+)?)/);
+
+  if (!amountMatch) {
+    return null;
+  }
+
+  const amount = Number(
+    amountMatch[1].replace(',', '.')
+  );
+
+  if (
+    !Number.isFinite(amount) ||
+    amount <= 0
+  ) {
+    return null;
+  }
+
+  const searchText =
+    normalizeArabicText(
+      text
+        .replace(amountMatch[0], '')
+        .replace(
+          /جنيه|جنية|جنيها|ج\.م/gi,
+          ''
+        )
+        .replace(
+          /دفعت|سددت|سداد|دين|قسط|مديونية|مديونيه|من/gi,
+          ''
+        )
+        .trim()
+    );
+
+  return {
+    amount,
+    searchText,
+  };
+}
+
+// ============================================================
 // Read-Only Financial Queries
 // ============================================================
 
@@ -614,13 +675,11 @@ ${formatMoney(context.safeToSpend || 0)} ج.م`;
   if (
     normalized === '/help' ||
     normalized.includes('مساعده') ||
-    normalized.includes(
-      'تقدر تعمل ايه'
-    )
+    normalized.includes('تقدر تعمل ايه')
   ) {
     return `🤖 أقدر حاليًا أساعدك في:
 
-📊 قراءة البيانات:
+📊 الاستعلام:
 • رصيدي كام؟
 • مرتبي كام؟
 • صرفت كام الشهر ده؟
@@ -634,7 +693,10 @@ ${formatMoney(context.safeToSpend || 0)} ج.م`;
 💵 تسجيل دخل:
 قبضت 500 جنيه مكافأة
 
-أي تسجيل مالي لازم تؤكده الأول قبل الحفظ.`;
+💳 سداد دين:
+دفعت 500 جنيه من دين البنك
+
+كل عملية مالية لازم تؤكدها قبل التنفيذ.`;
   }
 
   return `🤖 أنا متصل بحساب Mizaniya AI بتاعك.
@@ -645,13 +707,14 @@ ${formatMoney(context.safeToSpend || 0)} ج.م`;
 صرفت كام الشهر ده؟
 فاضل من الميزانية كام؟
 
-أو:
-
+أو تسجيل مصروف:
 سجل 150 جنيه بنزين
 
-أو:
+أو تسجيل دخل:
+قبضت 500 جنيه مكافأة
 
-قبضت 500 جنيه مكافأة`;
+أو سداد دين:
+دفعت 500 جنيه من دين البنك`;
 }
 
 // ============================================================
@@ -719,15 +782,7 @@ router.post(
 
 حساب Telegram بتاعك مربوط بالفعل بحساب Mizaniya AI ✅
 
-تقدر تسألني عن رصيدك وميزانيتك وديونك والتزاماتك.
-
-وتقدر كمان تسجل معاملات مثل:
-
-سجل 150 جنيه بنزين
-
-أو:
-
-قبضت 500 جنيه مكافأة
+تقدر تستعلم عن بياناتك، وتسجل مصروف أو دخل، وتسدد دين.
 
 اكتب /help للمساعدة.`
           );
@@ -743,10 +798,12 @@ router.post(
           );
         }
 
-        return res.status(200).json({
-          success: true,
-          received: true,
-        });
+        return res
+          .status(200)
+          .json({
+            success: true,
+            received: true,
+          });
       }
 
       // ========================================================
@@ -766,8 +823,7 @@ router.post(
 
 مش محتاج تعمل ربط مرة تانية.
 
-جرب:
-رصيدي كام؟`
+اكتب /help لمعرفة الأوامر المتاحة.`
           );
 
           return res
@@ -871,7 +927,7 @@ ${code}
       }
 
       // ========================================================
-      // Ensure Telegram Account Is Linked
+      // Ensure Account Is Linked
       // ========================================================
 
       const linkedUserId =
@@ -902,7 +958,7 @@ ${code}
         );
 
       // ========================================================
-      // CONFIRM Pending Transaction
+      // CONFIRM Pending Action
       // ========================================================
 
       if (
@@ -930,7 +986,7 @@ ${code}
         ) {
           await sendTelegramMessage(
             chatId,
-            'مفيش معاملة منتظرة للتأكيد.'
+            'مفيش عملية منتظرة للتأكيد.'
           );
 
           return res
@@ -956,7 +1012,7 @@ ${code}
 
           await sendTelegramMessage(
             chatId,
-            `⏰ المعاملة المنتظرة انتهت صلاحيتها.
+            `⏰ العملية المنتظرة انتهت صلاحيتها.
 
 ابعتها من جديد.`
           );
@@ -968,6 +1024,190 @@ ${code}
               received: true,
             });
         }
+
+        // ======================================================
+        // Confirm Debt Payment
+        // ======================================================
+
+        if (
+          pending.actionType ===
+          'debt_payment'
+        ) {
+          const debtId =
+            String(
+              pending.debtId || ''
+            );
+
+          const amount =
+            Number(
+              pending.amount || 0
+            );
+
+          if (
+            !debtId ||
+            !Number.isFinite(amount) ||
+            amount <= 0
+          ) {
+            await pendingRef.delete();
+
+            await sendTelegramMessage(
+              chatId,
+              'تعذر تنفيذ سداد الدين لأن بيانات العملية غير صالحة.'
+            );
+
+            return res
+              .status(200)
+              .json({
+                success: true,
+                received: true,
+              });
+          }
+
+          // Re-read debt before payment to avoid using stale amount
+          const contextBefore =
+            await getTrustedFinancialContext(
+              linkedUserId
+            );
+
+          const currentDebt = (
+            contextBefore.debts || []
+          ).find(
+            (debt: any) =>
+              debt.id === debtId
+          );
+
+          if (!currentDebt) {
+            await pendingRef.delete();
+
+            await sendTelegramMessage(
+              chatId,
+              '⚠️ الدين لم يعد موجودًا في حسابك.'
+            );
+
+            return res
+              .status(200)
+              .json({
+                success: true,
+                received: true,
+              });
+          }
+
+          const remainingNow =
+            Number(
+              currentDebt.remainingAmount ||
+                0
+            );
+
+          if (
+            remainingNow <= 0
+          ) {
+            await pendingRef.delete();
+
+            await sendTelegramMessage(
+              chatId,
+              '✅ الدين ده مسدد بالفعل.'
+            );
+
+            return res
+              .status(200)
+              .json({
+                success: true,
+                received: true,
+              });
+          }
+
+          if (
+            amount >
+            remainingNow
+          ) {
+            await pendingRef.delete();
+
+            await sendTelegramMessage(
+              chatId,
+              `⚠️ قيمة الدين اتغيرت قبل التأكيد.
+
+المتبقي حاليًا:
+${formatMoney(remainingNow)} ج.م
+
+ابعت عملية السداد من جديد بالقيمة الصحيحة.`
+            );
+
+            return res
+              .status(200)
+              .json({
+                success: true,
+                received: true,
+              });
+          }
+
+          const date =
+            new Date()
+              .toISOString()
+              .split('T')[0];
+
+          const idempotencyKey =
+            `telegram-debt-${telegramUserId}-${pending.createdAt}`;
+
+          await recordDebtPayment(
+            linkedUserId,
+            debtId,
+            amount,
+            'Cash',
+            date,
+            idempotencyKey
+          );
+
+          await markBudgetStale(
+            linkedUserId
+          );
+
+          await pendingRef.delete();
+
+          const contextAfter =
+            await getTrustedFinancialContext(
+              linkedUserId
+            );
+
+          const updatedDebt = (
+            contextAfter.debts || []
+          ).find(
+            (debt: any) =>
+              debt.id === debtId
+          );
+
+          const remainingAfter =
+            Number(
+              updatedDebt
+                ?.remainingAmount || 0
+            );
+
+          await sendTelegramMessage(
+            chatId,
+            `✅ تم تسجيل سداد الدين بنجاح.
+
+🏦 الدين:
+${pending.creditorName || 'دين'}
+
+💰 المبلغ المدفوع:
+${formatMoney(amount)} ج.م
+
+📉 المتبقي على الدين:
+${formatMoney(remainingAfter)} ج.م
+
+📊 تم تحديث بيانات الدين والميزانية.`
+          );
+
+          return res
+            .status(200)
+            .json({
+              success: true,
+              received: true,
+            });
+        }
+
+        // ======================================================
+        // Confirm Normal Income / Expense
+        // ======================================================
 
         const parsed =
           transactionCreateSchema.safeParse(
@@ -1047,7 +1287,7 @@ ${transaction.id}`
       }
 
       // ========================================================
-      // CANCEL Pending Transaction
+      // CANCEL Pending Action
       // ========================================================
 
       if (
@@ -1076,7 +1316,7 @@ ${transaction.id}`
         ) {
           await sendTelegramMessage(
             chatId,
-            'مفيش معاملة منتظرة للإلغاء.'
+            'مفيش عملية منتظرة للإلغاء.'
           );
 
           return res
@@ -1091,7 +1331,7 @@ ${transaction.id}`
 
         await sendTelegramMessage(
           chatId,
-          '❌ تم إلغاء المعاملة.'
+          '❌ تم إلغاء العملية.'
         );
 
         return res
@@ -1107,8 +1347,292 @@ ${transaction.id}`
       // ========================================================
 
       if (text) {
+
         // ======================================================
-        // 1. Detect New Income FIRST
+        // 1. Detect Debt Payment FIRST
+        // ======================================================
+
+        const debtPaymentCandidate =
+          extractDebtPaymentCandidate(
+            text
+          );
+
+        if (
+          debtPaymentCandidate
+        ) {
+          const context =
+            await getTrustedFinancialContext(
+              linkedUserId
+            );
+
+          const activeDebts = (
+            context.debts || []
+          ).filter(
+            (debt: any) =>
+              debt.status ===
+                'ACTIVE' ||
+              debt.status ===
+                'active' ||
+              debt.status ===
+                'OVERDUE' ||
+              debt.status ===
+                'overdue' ||
+              debt.status ===
+                'PAUSED' ||
+              debt.status ===
+                'paused'
+          );
+
+          if (
+            activeDebts.length ===
+            0
+          ) {
+            await sendTelegramMessage(
+              chatId,
+              '💳 مفيش ديون نشطة مسجلة حاليًا في حسابك.'
+            );
+
+            return res
+              .status(200)
+              .json({
+                success: true,
+                received: true,
+              });
+          }
+
+          let selectedDebt: any =
+            null;
+
+          // One active debt -> automatic selection
+          if (
+            activeDebts.length ===
+            1
+          ) {
+            selectedDebt =
+              activeDebts[0];
+          } else {
+            const search =
+              debtPaymentCandidate.searchText;
+
+            if (search) {
+              selectedDebt =
+                activeDebts.find(
+                  (debt: any) => {
+                    const creditor =
+                      normalizeArabicText(
+                        String(
+                          debt.creditorName ||
+                            ''
+                        )
+                      );
+
+                    if (
+                      !creditor
+                    ) {
+                      return false;
+                    }
+
+                    return (
+                      creditor.includes(
+                        search
+                      ) ||
+                      search.includes(
+                        creditor
+                      )
+                    );
+                  }
+                ) || null;
+            }
+          }
+
+          if (!selectedDebt) {
+            const debtList =
+              activeDebts
+                .map(
+                  (
+                    debt: any,
+                    index: number
+                  ) =>
+                    `${index + 1}. ${
+                      debt.creditorName ||
+                      'دين بدون اسم'
+                    } — ${formatMoney(
+                      Number(
+                        debt.remainingAmount ||
+                          0
+                      )
+                    )} ج.م`
+                )
+                .join('\n');
+
+            await sendTelegramMessage(
+              chatId,
+              `💳 عندك أكتر من دين ومش قدرت أحدد تقصد أنهي واحد.
+
+الديون الحالية:
+
+${debtList}
+
+اكتب اسم الجهة بشكل أوضح، مثال:
+
+دفعت 500 جنيه من دين البنك الأهلي`
+            );
+
+            return res
+              .status(200)
+              .json({
+                success: true,
+                received: true,
+              });
+          }
+
+          const remainingAmount =
+            Number(
+              selectedDebt
+                .remainingAmount ||
+                0
+            );
+
+          if (
+            remainingAmount <= 0
+          ) {
+            await sendTelegramMessage(
+              chatId,
+              '✅ الدين المحدد مسدد بالفعل.'
+            );
+
+            return res
+              .status(200)
+              .json({
+                success: true,
+                received: true,
+              });
+          }
+
+          if (
+            debtPaymentCandidate.amount >
+            remainingAmount
+          ) {
+            await sendTelegramMessage(
+              chatId,
+              `⚠️ مبلغ السداد أكبر من المتبقي على الدين.
+
+💰 مبلغ السداد:
+${formatMoney(
+  debtPaymentCandidate.amount
+)} ج.م
+
+📉 المتبقي على الدين:
+${formatMoney(
+  remainingAmount
+)} ج.م`
+            );
+
+            return res
+              .status(200)
+              .json({
+                success: true,
+                received: true,
+              });
+          }
+
+          const now =
+            Date.now();
+
+          await db
+            .collection(
+              'telegram_pending_transactions'
+            )
+            .doc(
+              String(
+                telegramUserId
+              )
+            )
+            .set({
+              userId:
+                linkedUserId,
+
+              telegramUserId,
+
+              chatId,
+
+              actionType:
+                'debt_payment',
+
+              debtId:
+                selectedDebt.id,
+
+              creditorName:
+                selectedDebt
+                  .creditorName ||
+                'دين',
+
+              amount:
+                debtPaymentCandidate.amount,
+
+              remainingBefore:
+                remainingAmount,
+
+              used: false,
+
+              createdAt:
+                now,
+
+              expiresAt:
+                now +
+                PENDING_TX_EXPIRY_MINUTES *
+                  60 *
+                  1000,
+            });
+
+          await sendTelegramMessage(
+            chatId,
+            `💳 سداد دين جاهز للتأكيد:
+
+🏦 الدين:
+${
+  selectedDebt.creditorName ||
+  'دين'
+}
+
+💰 مبلغ السداد:
+${formatMoney(
+  debtPaymentCandidate.amount
+)} ج.م
+
+📉 المتبقي الحالي:
+${formatMoney(
+  remainingAmount
+)} ج.م
+
+✅ المتبقي بعد السداد:
+${formatMoney(
+  Math.max(
+    0,
+    remainingAmount -
+      debtPaymentCandidate.amount
+  )
+)} ج.م
+
+هل تريد تنفيذ السداد؟
+
+اكتب:
+تأكيد
+
+أو:
+إلغاء`
+          );
+
+          return res
+            .status(200)
+            .json({
+              success: true,
+              received: true,
+            });
+        }
+
+        // ======================================================
+        // 2. Detect Income
         // ======================================================
 
         const incomeCandidate =
@@ -1220,6 +1744,9 @@ ${transaction.id}`
 
               chatId,
 
+              actionType:
+                'transaction',
+
               transaction:
                 validation.data,
 
@@ -1269,7 +1796,7 @@ ${wallet.nameAr || wallet.name}
         }
 
         // ======================================================
-        // 2. Detect New Expense
+        // 3. Detect Expense
         // ======================================================
 
         const expenseCandidate =
@@ -1381,6 +1908,9 @@ ${wallet.nameAr || wallet.name}
 
               chatId,
 
+              actionType:
+                'transaction',
+
               transaction:
                 validation.data,
 
@@ -1430,7 +1960,7 @@ ${wallet.nameAr || wallet.name}
         }
 
         // ======================================================
-        // 3. Normal Read Query
+        // 4. Normal Read Query
         // ======================================================
 
         const reply =
@@ -1457,7 +1987,7 @@ ${wallet.nameAr || wallet.name}
         error
       );
 
-      // Telegram should receive 200 to prevent retry storms.
+      // Return 200 to Telegram to avoid retry storms.
       return res
         .status(200)
         .json({
