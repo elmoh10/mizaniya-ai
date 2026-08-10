@@ -77,6 +77,10 @@ export const transactionCreateSchema = z
     isDuplicate: z.boolean().optional(),
     aiTag: z.string().optional(),
     hasAnomaly: z.boolean().optional(),
+
+    relatedDebtId: z.string().optional(),
+    relatedObligationId: z.string().optional(),
+    relatedInstallmentId: z.string().optional(),
   })
   .superRefine((data, ctx) => {
     if (data.type === 'transfer') {
