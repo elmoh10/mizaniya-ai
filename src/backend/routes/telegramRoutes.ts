@@ -12,6 +12,7 @@ import { transactionRepository } from '../repositories/transactionRepository';
 import { getWalletsForUser } from '../services/walletService';
 import { transactionCreateSchema } from '../validators/schemas';
 import { recordDebtPayment } from '../services/debtService';
+import { createObligation } from '../services/obligationService';
 
 import { CategoryType } from '../../types';
 
@@ -580,6 +581,114 @@ function extractObligationPaymentCandidate(
 }
 
 // ============================================================
+// Create Recurring Obligation Parser
+// ============================================================
+
+function extractCreateObligationCandidate(
+  text: string
+): {
+  name: string;
+  amount: number;
+  frequency: 'WEEKLY' | 'MONTHLY' | 'QUARTERLY' | 'YEARLY';
+} | null {
+  const normalized = normalizeArabicText(text);
+
+  const hasCreateIntent =
+    normalized.includes('اضف التزام') ||
+    normalized.includes('سجل التزام') ||
+    normalized.includes('اعمل التزام') ||
+    normalized.includes('انشئ التزام') ||
+    normalized.includes('عندي التزام');
+
+  const hasRecurringMeaning =
+    normalized.includes('شهري') ||
+    normalized.includes('كل شهر') ||
+    normalized.includes('اسبوعي') ||
+    normalized.includes('كل اسبوع') ||
+    normalized.includes('ربع سنوي') ||
+    normalized.includes('كل 3 شهور') ||
+    normalized.includes('كل ثلاث شهور') ||
+    normalized.includes('سنوي') ||
+    normalized.includes('كل سنه');
+
+  if (!hasCreateIntent || !hasRecurringMeaning) {
+    return null;
+  }
+
+  const amountMatch = text.match(/(\d+(?:[.,]\d+)?)/);
+
+  if (!amountMatch) {
+    return null;
+  }
+
+  const amount = Number(amountMatch[1].replace(',', '.'));
+
+  if (!Number.isFinite(amount) || amount <= 0) {
+    return null;
+  }
+
+  let frequency: 'WEEKLY' | 'MONTHLY' | 'QUARTERLY' | 'YEARLY' = 'MONTHLY';
+
+  if (
+    normalized.includes('اسبوعي') ||
+    normalized.includes('كل اسبوع')
+  ) {
+    frequency = 'WEEKLY';
+  } else if (
+    normalized.includes('ربع سنوي') ||
+    normalized.includes('كل 3 شهور') ||
+    normalized.includes('كل ثلاث شهور')
+  ) {
+    frequency = 'QUARTERLY';
+  } else if (
+    normalized.includes('سنوي') ||
+    normalized.includes('كل سنه')
+  ) {
+    frequency = 'YEARLY';
+  }
+
+  let name = text
+    .replace(amountMatch[0], '')
+    .replace(/جنيه|جنية|جنيها|ج\.م/gi, '')
+    .replace(/أضف|اضف|سجل|اعمل|أنشئ|انشئ|عندي/gi, '')
+    .replace(/التزام|التزامات/gi, '')
+    .replace(/شهري|شهريا|كل شهر/gi, '')
+    .replace(/أسبوعي|اسبوعي|كل أسبوع|كل اسبوع/gi, '')
+    .replace(/ربع سنوي|كل 3 شهور|كل ثلاث شهور/gi, '')
+    .replace(/سنوي|سنويا|كل سنة|كل سنه/gi, '')
+    .replace(/بقيمة|بقيمه|بمبلغ|قيمته|مبلغه/gi, '')
+    .trim();
+
+  name = name.replace(/\s+/g, ' ').trim();
+
+  if (name.length < 2) {
+    return null;
+  }
+
+  return {
+    name,
+    amount,
+    frequency,
+  };
+}
+
+function getArabicFrequencyName(
+  frequency: 'WEEKLY' | 'MONTHLY' | 'QUARTERLY' | 'YEARLY'
+): string {
+  switch (frequency) {
+    case 'WEEKLY':
+      return 'أسبوعي';
+    case 'QUARTERLY':
+      return 'ربع سنوي';
+    case 'YEARLY':
+      return 'سنوي';
+    case 'MONTHLY':
+    default:
+      return 'شهري';
+  }
+}
+
+// ============================================================
 // Read-Only Financial Queries
 // ============================================================
 
@@ -776,6 +885,9 @@ ${formatMoney(context.safeToSpend || 0)} ج.م`;
 📅 سداد التزام:
 دفعت 300 جنيه من التزام الإنترنت
 
+➕ إنشاء التزام متكرر:
+أضف التزام شهري نت 600 جنيه
+
 كل عملية مالية لازم تؤكدها قبل التنفيذ.`;
   }
 
@@ -797,7 +909,10 @@ ${formatMoney(context.safeToSpend || 0)} ج.م`;
 دفعت 500 جنيه من دين CIB
 
 📅 سداد التزام:
-دفعت 300 جنيه من التزام الإنترنت`;
+دفعت 300 جنيه من التزام الإنترنت
+
+➕ إنشاء التزام متكرر:
+أضف التزام شهري نت 600 جنيه`;
 }
 
 // ============================================================
@@ -1111,6 +1226,144 @@ ${code}
             `⏰ العملية المنتظرة انتهت صلاحيتها.
 
 ابعتها من جديد.`
+          );
+
+          return res
+            .status(200)
+            .json({
+              success: true,
+              received: true,
+            });
+        }
+
+        // ======================================================
+        // Confirm Create Recurring Obligation
+        // ======================================================
+
+        if (
+          pending.actionType ===
+          'create_obligation'
+        ) {
+          const obligationName =
+            String(pending.obligationName || '').trim();
+
+          const amount =
+            Number(pending.amount || 0);
+
+          const frequency =
+            String(pending.frequency || 'MONTHLY') as
+              'WEEKLY' | 'MONTHLY' | 'QUARTERLY' | 'YEARLY';
+
+          if (
+            obligationName.length < 2 ||
+            !Number.isFinite(amount) ||
+            amount <= 0 ||
+            !['WEEKLY', 'MONTHLY', 'QUARTERLY', 'YEARLY'].includes(frequency)
+          ) {
+            await pendingRef.delete();
+
+            await sendTelegramMessage(
+              chatId,
+              'تعذر إنشاء الالتزام لأن بيانات العملية غير صالحة.'
+            );
+
+            return res
+              .status(200)
+              .json({
+                success: true,
+                received: true,
+              });
+          }
+
+          const contextBefore =
+            await getTrustedFinancialContext(
+              linkedUserId
+            );
+
+          const duplicate = (
+            contextBefore.obligations || []
+          ).find((ob: any) => {
+            const sameName =
+              normalizeArabicText(String(ob.name || '')) ===
+              normalizeArabicText(obligationName);
+
+            const sameFrequency =
+              String(ob.frequency || 'MONTHLY').toUpperCase() === frequency;
+
+            const active =
+              ob.status === 'ACTIVE' ||
+              ob.status === 'active';
+
+            return sameName && sameFrequency && active;
+          });
+
+          if (duplicate) {
+            await pendingRef.delete();
+
+            await sendTelegramMessage(
+              chatId,
+              `⚠️ عندك بالفعل التزام نشط بنفس الاسم والتكرار:
+
+📌 ${obligationName}
+🔁 ${getArabicFrequencyName(frequency)}
+💰 ${formatMoney(Number(duplicate.amount || 0))} ج.م
+
+لم يتم إنشاء التزام مكرر.`
+            );
+
+            return res
+              .status(200)
+              .json({
+                success: true,
+                received: true,
+              });
+          }
+
+          const today = new Date()
+            .toISOString()
+            .split('T')[0];
+
+          const created =
+            await createObligation(
+              linkedUserId,
+              {
+                name: obligationName,
+                amount,
+                category:
+                  pending.category ||
+                  detectExpenseCategory(obligationName),
+                dueDate:
+                  pending.dueDate || today,
+                frequency,
+                notes:
+                  'تم إنشاء الالتزام من Telegram',
+              }
+            );
+
+          await markBudgetStale(
+            linkedUserId
+          );
+
+          await pendingRef.delete();
+
+          await sendTelegramMessage(
+            chatId,
+            `✅ تم إنشاء الالتزام بنجاح.
+
+📌 الالتزام:
+${obligationName}
+
+💰 المبلغ:
+${formatMoney(amount)} ج.م
+
+🔁 التكرار:
+${getArabicFrequencyName(frequency)}
+
+📅 تاريخ البداية/الاستحقاق:
+${today}
+
+رقم الالتزام:
+${created.id}`
           );
 
           return res
@@ -1761,7 +2014,110 @@ ${transaction.id}`
 
       if (text) {
         // ======================================================
-        // 1. Obligation Payment FIRST
+        // 1. Create Recurring Obligation FIRST
+        // ======================================================
+
+        const createObligationCandidate =
+          extractCreateObligationCandidate(
+            text
+          );
+
+        if (createObligationCandidate) {
+          const now = Date.now();
+
+          const today = new Date()
+            .toISOString()
+            .split('T')[0];
+
+          const category =
+            detectExpenseCategory(
+              createObligationCandidate.name
+            );
+
+          await db
+            .collection(
+              'telegram_pending_transactions'
+            )
+            .doc(
+              String(
+                telegramUserId
+              )
+            )
+            .set({
+              userId:
+                linkedUserId,
+
+              telegramUserId,
+
+              chatId,
+
+              actionType:
+                'create_obligation',
+
+              obligationName:
+                createObligationCandidate.name,
+
+              amount:
+                createObligationCandidate.amount,
+
+              frequency:
+                createObligationCandidate.frequency,
+
+              category,
+
+              dueDate:
+                today,
+
+              used: false,
+
+              createdAt:
+                now,
+
+              expiresAt:
+                now +
+                PENDING_TX_EXPIRY_MINUTES *
+                  60 *
+                  1000,
+            });
+
+          await sendTelegramMessage(
+            chatId,
+            `📅 التزام متكرر جديد جاهز للإضافة:
+
+📌 الالتزام:
+${createObligationCandidate.name}
+
+💰 المبلغ:
+${formatMoney(createObligationCandidate.amount)} ج.م
+
+🔁 التكرار:
+${getArabicFrequencyName(createObligationCandidate.frequency)}
+
+📂 الفئة:
+${getArabicCategoryName(category)}
+
+⚠️ ده التزام متكرر، مش مصروف لحظي.
+لن يتم خصم أي مبلغ من المحفظة الآن.
+
+هل تريد إنشاء الالتزام؟
+
+اكتب:
+تأكيد
+
+أو:
+إلغاء`
+          );
+
+          return res
+            .status(200)
+            .json({
+              success: true,
+              received: true,
+            });
+        }
+
+        // ======================================================
+        // 2. Obligation Payment
         // ======================================================
 
         const obligationPaymentCandidate =
@@ -2135,7 +2491,7 @@ ${wallet.nameAr || wallet.name}
         }
 
         // ======================================================
-        // 2. Debt Payment
+        // 3. Debt Payment
         // ======================================================
 
         const debtPaymentCandidate =
@@ -2414,7 +2770,7 @@ ${formatMoney(
         }
 
         // ======================================================
-        // 3. Income
+        // 4. Income
         // ======================================================
 
         const incomeCandidate =
@@ -2580,7 +2936,7 @@ ${wallet.nameAr || wallet.name}
         }
 
         // ======================================================
-        // 4. Expense
+        // 5. Expense
         // ======================================================
 
         const expenseCandidate =
@@ -2748,7 +3104,7 @@ ${wallet.nameAr || wallet.name}
         }
 
         // ======================================================
-        // 5. Normal Read Query
+        // 6. Normal Read Query
         // ======================================================
 
         const reply =
