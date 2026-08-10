@@ -2,11 +2,17 @@ import { Router, Request, Response } from 'express';
 import { createHash, randomInt } from 'crypto';
 
 import { db } from '../config/firebaseAdmin';
-import { getTrustedFinancialContext } from '../services/financialContextService';
+
+import {
+  getTrustedFinancialContext,
+  getObligationAmountDueForMonth,
+} from '../services/financialContextService';
+
 import { transactionRepository } from '../repositories/transactionRepository';
 import { getWalletsForUser } from '../services/walletService';
 import { transactionCreateSchema } from '../validators/schemas';
 import { recordDebtPayment } from '../services/debtService';
+
 import { CategoryType } from '../../types';
 
 const router = Router();
@@ -81,7 +87,7 @@ function normalizeArabicText(text: string): string {
 }
 
 // ============================================================
-// Telegram Account Link Lookup
+// Telegram Account Link
 // ============================================================
 
 async function getLinkedUserId(
@@ -106,7 +112,7 @@ async function getLinkedUserId(
 }
 
 // ============================================================
-// Budget Staleness
+// Budget Stale Flag
 // ============================================================
 
 async function markBudgetStale(
@@ -164,7 +170,7 @@ async function getPrimaryWallet(userId: string) {
 }
 
 // ============================================================
-// Expense Category Detection
+// Category Detection
 // ============================================================
 
 function detectExpenseCategory(
@@ -202,7 +208,6 @@ function detectExpenseCategory(
 
   if (
     normalized.includes('انترنت') ||
-    normalized.includes('نت') ||
     normalized.includes('اشتراك') ||
     normalized.includes('نتفلكس') ||
     normalized.includes('شاهد')
@@ -239,9 +244,8 @@ function detectExpenseCategory(
   if (
     normalized.includes('مصروف البيت') ||
     normalized.includes('الاولاد') ||
-    normalized.includes('الأولاد') ||
     normalized.includes('العيله') ||
-    normalized.includes('العائلة')
+    normalized.includes('العائله')
   ) {
     return 'Family & Allowances';
   }
@@ -508,6 +512,74 @@ function extractDebtPaymentCandidate(
 }
 
 // ============================================================
+// Obligation Payment Parser
+// ============================================================
+
+function extractObligationPaymentCandidate(
+  text: string
+): {
+  amount: number;
+  searchText: string;
+} | null {
+  const normalized =
+    normalizeArabicText(text);
+
+  const hasPaymentWord =
+    normalized.includes('دفعت') ||
+    normalized.includes('سددت') ||
+    normalized.includes('سداد');
+
+  const hasObligationWord =
+    normalized.includes('التزام') ||
+    normalized.includes('التزامات');
+
+  if (
+    !hasPaymentWord ||
+    !hasObligationWord
+  ) {
+    return null;
+  }
+
+  const amountMatch =
+    text.match(/(\d+(?:[.,]\d+)?)/);
+
+  if (!amountMatch) {
+    return null;
+  }
+
+  const amount = Number(
+    amountMatch[1].replace(',', '.')
+  );
+
+  if (
+    !Number.isFinite(amount) ||
+    amount <= 0
+  ) {
+    return null;
+  }
+
+  const searchText =
+    normalizeArabicText(
+      text
+        .replace(amountMatch[0], '')
+        .replace(
+          /جنيه|جنية|جنيها|ج\.م/gi,
+          ''
+        )
+        .replace(
+          /دفعت|سددت|سداد|التزام|التزامات|من/gi,
+          ''
+        )
+        .trim()
+    );
+
+  return {
+    amount,
+    searchText,
+  };
+}
+
+// ============================================================
 // Read-Only Financial Queries
 // ============================================================
 
@@ -535,7 +607,7 @@ async function handleFinancialQuery(
 ${formatMoney(context.salary || 0)} ج.م`;
   }
 
-  // Wallet balance
+  // Wallet
   if (
     normalized.includes('رصيدي') ||
     normalized.includes('الرصيد') ||
@@ -547,7 +619,7 @@ ${formatMoney(context.salary || 0)} ج.م`;
 ${formatMoney(context.totalWalletBalance || 0)} ج.م`;
   }
 
-  // Current month spending
+  // Expenses
   if (
     normalized.includes('صرفت كام') ||
     normalized.includes('صرفي كام') ||
@@ -606,18 +678,21 @@ ${formatMoney(context.monthlyDebtPayments || 0)} ج.م`;
     normalized.includes('الاقساط') ||
     normalized.includes('اقساطي')
   ) {
-    const installments = Number(
-      context.monthlyInstallmentObligation ||
-        0
-    );
+    const installments =
+      Number(
+        context.monthlyInstallmentObligation ||
+          0
+      );
 
-    const unpaidBills = Number(
-      context.unpaidBillsTotal || 0
-    );
+    const unpaidBills =
+      Number(
+        context.unpaidBillsTotal || 0
+      );
 
-    const obligations = Number(
-      context.monthlyObligations || 0
-    );
+    const obligations =
+      Number(
+        context.monthlyObligations || 0
+      );
 
     const total =
       installments +
@@ -675,7 +750,9 @@ ${formatMoney(context.safeToSpend || 0)} ج.م`;
   if (
     normalized === '/help' ||
     normalized.includes('مساعده') ||
-    normalized.includes('تقدر تعمل ايه')
+    normalized.includes(
+      'تقدر تعمل ايه'
+    )
   ) {
     return `🤖 أقدر حاليًا أساعدك في:
 
@@ -694,7 +771,10 @@ ${formatMoney(context.safeToSpend || 0)} ج.م`;
 قبضت 500 جنيه مكافأة
 
 💳 سداد دين:
-دفعت 500 جنيه من دين البنك
+دفعت 500 جنيه من دين CIB
+
+📅 سداد التزام:
+دفعت 300 جنيه من التزام الإنترنت
 
 كل عملية مالية لازم تؤكدها قبل التنفيذ.`;
   }
@@ -707,19 +787,21 @@ ${formatMoney(context.safeToSpend || 0)} ج.م`;
 صرفت كام الشهر ده؟
 فاضل من الميزانية كام؟
 
-أو تسجيل مصروف:
+💸 مصروف:
 سجل 150 جنيه بنزين
 
-أو تسجيل دخل:
+💵 دخل:
 قبضت 500 جنيه مكافأة
 
-أو سداد دين:
-دفعت 500 جنيه من دين البنك`;
+💳 سداد دين:
+دفعت 500 جنيه من دين CIB
+
+📅 سداد التزام:
+دفعت 300 جنيه من التزام الإنترنت`;
 }
 
 // ============================================================
 // Telegram Webhook
-// POST /telegram/webhook
 // ============================================================
 
 router.post(
@@ -740,10 +822,12 @@ router.post(
         update?.message;
 
       if (!message) {
-        return res.status(200).json({
-          success: true,
-          received: true,
-        });
+        return res
+          .status(200)
+          .json({
+            success: true,
+            received: true,
+          });
       }
 
       const chatId =
@@ -759,10 +843,12 @@ router.post(
         !chatId ||
         !telegramUserId
       ) {
-        return res.status(200).json({
-          success: true,
-          received: true,
-        });
+        return res
+          .status(200)
+          .json({
+            success: true,
+            received: true,
+          });
       }
 
       // ========================================================
@@ -780,11 +866,12 @@ router.post(
             chatId,
             `أهلاً بيك في ميزانية AI 🤖💚
 
-حساب Telegram بتاعك مربوط بالفعل بحساب Mizaniya AI ✅
+حساب Telegram بتاعك مربوط بالفعل ✅
 
-تقدر تستعلم عن بياناتك، وتسجل مصروف أو دخل، وتسدد دين.
+تقدر تستعلم عن بياناتك، تسجل مصروف ودخل، وتسدد دين أو التزام.
 
-اكتب /help للمساعدة.`
+اكتب:
+/help`
           );
         } else {
           await sendTelegramMessage(
@@ -823,7 +910,7 @@ router.post(
 
 مش محتاج تعمل ربط مرة تانية.
 
-اكتب /help لمعرفة الأوامر المتاحة.`
+اكتب /help لمعرفة الأوامر.`
           );
 
           return res
@@ -840,7 +927,8 @@ router.post(
         const codeHash =
           hashLinkCode(code);
 
-        const now = Date.now();
+        const now =
+          Date.now();
 
         const expiresAt =
           now +
@@ -865,7 +953,8 @@ router.post(
             )
             .get();
 
-        const batch = db.batch();
+        const batch =
+          db.batch();
 
         oldCodesSnapshot.docs.forEach(
           (doc) => {
@@ -889,15 +978,18 @@ router.post(
             chatId,
 
             telegramUsername:
-              message.from?.username ||
+              message.from
+                ?.username ||
               null,
 
             telegramFirstName:
-              message.from?.first_name ||
+              message.from
+                ?.first_name ||
               null,
 
             telegramLastName:
-              message.from?.last_name ||
+              message.from
+                ?.last_name ||
               null,
 
             used: false,
@@ -927,7 +1019,7 @@ ${code}
       }
 
       // ========================================================
-      // Ensure Account Is Linked
+      // Ensure Linked Account
       // ========================================================
 
       const linkedUserId =
@@ -958,25 +1050,28 @@ ${code}
         );
 
       // ========================================================
-      // CONFIRM Pending Action
+      // Confirm Pending Action
       // ========================================================
 
       if (
         normalized === 'تاكيد' ||
         normalized === 'ايوه' ||
-        normalized === 'ايوه سجل' ||
-        normalized === 'ايوه سجله' ||
+        normalized ===
+          'ايوه سجل' ||
+        normalized ===
+          'ايوه سجله' ||
         normalized === 'موافق'
       ) {
-        const pendingRef = db
-          .collection(
-            'telegram_pending_transactions'
-          )
-          .doc(
-            String(
-              telegramUserId
+        const pendingRef =
+          db
+            .collection(
+              'telegram_pending_transactions'
             )
-          );
+            .doc(
+              String(
+                telegramUserId
+              )
+            );
 
         const pendingDoc =
           await pendingRef.get();
@@ -1005,7 +1100,8 @@ ${code}
           pending.used === true ||
           Date.now() >
             Number(
-              pending.expiresAt || 0
+              pending.expiresAt ||
+                0
             )
         ) {
           await pendingRef.delete();
@@ -1015,6 +1111,309 @@ ${code}
             `⏰ العملية المنتظرة انتهت صلاحيتها.
 
 ابعتها من جديد.`
+          );
+
+          return res
+            .status(200)
+            .json({
+              success: true,
+              received: true,
+            });
+        }
+
+        // ======================================================
+        // Confirm Obligation Payment
+        // ======================================================
+
+        if (
+          pending.actionType ===
+          'obligation_payment'
+        ) {
+          const obligationId =
+            String(
+              pending.obligationId ||
+                ''
+            );
+
+          const amount =
+            Number(
+              pending.amount || 0
+            );
+
+          const walletId =
+            String(
+              pending.walletId ||
+                ''
+            );
+
+          if (
+            !obligationId ||
+            !walletId ||
+            !Number.isFinite(
+              amount
+            ) ||
+            amount <= 0
+          ) {
+            await pendingRef.delete();
+
+            await sendTelegramMessage(
+              chatId,
+              'تعذر تنفيذ سداد الالتزام لأن بيانات العملية غير صالحة.'
+            );
+
+            return res
+              .status(200)
+              .json({
+                success: true,
+                received: true,
+              });
+          }
+
+          // Re-read live data
+          const contextBefore =
+            await getTrustedFinancialContext(
+              linkedUserId
+            );
+
+          const obligation = (
+            contextBefore.obligations ||
+            []
+          ).find(
+            (ob: any) =>
+              ob.id ===
+              obligationId
+          );
+
+          if (!obligation) {
+            await pendingRef.delete();
+
+            await sendTelegramMessage(
+              chatId,
+              '⚠️ الالتزام لم يعد موجودًا في حسابك.'
+            );
+
+            return res
+              .status(200)
+              .json({
+                success: true,
+                received: true,
+              });
+          }
+
+          if (
+            obligation.status !==
+              'ACTIVE' &&
+            obligation.status !==
+              'active'
+          ) {
+            await pendingRef.delete();
+
+            await sendTelegramMessage(
+              chatId,
+              '⚠️ الالتزام لم يعد نشطًا.'
+            );
+
+            return res
+              .status(200)
+              .json({
+                success: true,
+                received: true,
+              });
+          }
+
+          const monthKey =
+            new Date()
+              .toISOString()
+              .slice(0, 7);
+
+          const dueInfo =
+            getObligationAmountDueForMonth(
+              obligation,
+              monthKey
+            );
+
+          const currentDue =
+            Number(
+              dueInfo.amount || 0
+            );
+
+          const currentlyPaid =
+            contextBefore
+              .recentTransactions
+              .filter(
+                (tx) =>
+                  tx.type ===
+                    'expense' &&
+                  tx.relatedObligationId ===
+                    obligationId &&
+                  String(
+                    tx.date || ''
+                  ).startsWith(
+                    monthKey
+                  )
+              )
+              .reduce(
+                (sum, tx) =>
+                  sum +
+                  Number(
+                    tx.amount || 0
+                  ),
+                0
+              );
+
+          const remainingNow =
+            Math.max(
+              0,
+              currentDue -
+                currentlyPaid
+            );
+
+          if (
+            remainingNow <= 0
+          ) {
+            await pendingRef.delete();
+
+            await sendTelegramMessage(
+              chatId,
+              '✅ الالتزام مدفوع بالكامل بالفعل لهذا الشهر.'
+            );
+
+            return res
+              .status(200)
+              .json({
+                success: true,
+                received: true,
+              });
+          }
+
+          if (
+            amount >
+            remainingNow
+          ) {
+            await pendingRef.delete();
+
+            await sendTelegramMessage(
+              chatId,
+              `⚠️ قيمة الالتزام اتغيرت قبل التأكيد.
+
+المتبقي حاليًا:
+${formatMoney(
+  remainingNow
+)} ج.م
+
+ابعت عملية السداد من جديد.`
+            );
+
+            return res
+              .status(200)
+              .json({
+                success: true,
+                received: true,
+              });
+          }
+
+          const transactionPayload =
+            {
+              title:
+                `سداد ${obligation.name}`,
+
+              amount,
+
+              currency:
+                pending.walletCurrency ||
+                'EGP',
+
+              type:
+                'expense' as const,
+
+              category:
+                'Bills & Subscriptions' as const,
+
+              walletId,
+
+              paymentMethod:
+                'Cash' as const,
+
+              date:
+                new Date()
+                  .toISOString()
+                  .split('T')[0],
+
+              notes:
+                'تم سداد الالتزام من Telegram',
+
+              aiTag:
+                'telegram-obligation-payment',
+
+              relatedObligationId:
+                obligationId,
+            };
+
+          const validation =
+            transactionCreateSchema.safeParse(
+              transactionPayload
+            );
+
+          if (
+            !validation.success
+          ) {
+            console.error(
+              'Telegram obligation validation failed:',
+              validation.error.format()
+            );
+
+            await pendingRef.delete();
+
+            await sendTelegramMessage(
+              chatId,
+              'تعذر تسجيل سداد الالتزام.'
+            );
+
+            return res
+              .status(200)
+              .json({
+                success: true,
+                received: true,
+              });
+          }
+
+          await transactionRepository.createTransaction(
+            linkedUserId,
+            validation.data
+          );
+
+          await markBudgetStale(
+            linkedUserId
+          );
+
+          await pendingRef.delete();
+
+          const remainingAfter =
+            Math.max(
+              0,
+              remainingNow -
+                amount
+            );
+
+          await sendTelegramMessage(
+            chatId,
+            `✅ تم تسجيل سداد الالتزام بنجاح.
+
+📌 الالتزام:
+${obligation.name}
+
+💰 المدفوع:
+${formatMoney(amount)} ج.م
+
+📉 المتبقي لهذا الشهر:
+${formatMoney(
+  remainingAfter
+)} ج.م
+
+👛 تم خصم المبلغ من:
+${pending.walletName || 'المحفظة'}
+
+📊 وتم تحديث الميزانية تلقائيًا.`
           );
 
           return res
@@ -1045,7 +1444,9 @@ ${code}
 
           if (
             !debtId ||
-            !Number.isFinite(amount) ||
+            !Number.isFinite(
+              amount
+            ) ||
             amount <= 0
           ) {
             await pendingRef.delete();
@@ -1063,14 +1464,14 @@ ${code}
               });
           }
 
-          // Re-read debt before payment to avoid using stale amount
           const contextBefore =
             await getTrustedFinancialContext(
               linkedUserId
             );
 
           const currentDebt = (
-            contextBefore.debts || []
+            contextBefore.debts ||
+            []
           ).find(
             (debt: any) =>
               debt.id === debtId
@@ -1094,7 +1495,8 @@ ${code}
 
           const remainingNow =
             Number(
-              currentDebt.remainingAmount ||
+              currentDebt
+                .remainingAmount ||
                 0
             );
 
@@ -1127,9 +1529,11 @@ ${code}
               `⚠️ قيمة الدين اتغيرت قبل التأكيد.
 
 المتبقي حاليًا:
-${formatMoney(remainingNow)} ج.م
+${formatMoney(
+  remainingNow
+)} ج.م
 
-ابعت عملية السداد من جديد بالقيمة الصحيحة.`
+ابعت عملية السداد من جديد.`
             );
 
             return res
@@ -1169,7 +1573,8 @@ ${formatMoney(remainingNow)} ج.م
             );
 
           const updatedDebt = (
-            contextAfter.debts || []
+            contextAfter.debts ||
+            []
           ).find(
             (debt: any) =>
               debt.id === debtId
@@ -1178,7 +1583,8 @@ ${formatMoney(remainingNow)} ج.م
           const remainingAfter =
             Number(
               updatedDebt
-                ?.remainingAmount || 0
+                ?.remainingAmount ||
+                0
             );
 
           await sendTelegramMessage(
@@ -1192,7 +1598,9 @@ ${pending.creditorName || 'دين'}
 ${formatMoney(amount)} ج.م
 
 📉 المتبقي على الدين:
-${formatMoney(remainingAfter)} ج.م
+${formatMoney(
+  remainingAfter
+)} ج.م
 
 📊 تم تحديث بيانات الدين والميزانية.`
           );
@@ -1206,7 +1614,7 @@ ${formatMoney(remainingAfter)} ج.م
         }
 
         // ======================================================
-        // Confirm Normal Income / Expense
+        // Confirm Income / Expense
         // ======================================================
 
         const parsed =
@@ -1260,13 +1668,17 @@ ${formatMoney(remainingAfter)} ج.م
           }
 
 💰 المبلغ:
-${formatMoney(parsed.data.amount)} ج.م
+${formatMoney(
+  parsed.data.amount
+)} ج.م
 
 📝 الوصف:
 ${parsed.data.title}
 
 📂 التصنيف:
-${getArabicCategoryName(parsed.data.category)}
+${getArabicCategoryName(
+  parsed.data.category
+)}
 
 👛 ${
             isIncome
@@ -1287,7 +1699,7 @@ ${transaction.id}`
       }
 
       // ========================================================
-      // CANCEL Pending Action
+      // Cancel Pending Action
       // ========================================================
 
       if (
@@ -1298,15 +1710,16 @@ ${transaction.id}`
         normalized ===
           'مش موافق'
       ) {
-        const pendingRef = db
-          .collection(
-            'telegram_pending_transactions'
-          )
-          .doc(
-            String(
-              telegramUserId
+        const pendingRef =
+          db
+            .collection(
+              'telegram_pending_transactions'
             )
-          );
+            .doc(
+              String(
+                telegramUserId
+              )
+            );
 
         const pendingDoc =
           await pendingRef.get();
@@ -1347,9 +1760,382 @@ ${transaction.id}`
       // ========================================================
 
       if (text) {
+        // ======================================================
+        // 1. Obligation Payment FIRST
+        // ======================================================
+
+        const obligationPaymentCandidate =
+          extractObligationPaymentCandidate(
+            text
+          );
+
+        if (
+          obligationPaymentCandidate
+        ) {
+          const context =
+            await getTrustedFinancialContext(
+              linkedUserId
+            );
+
+          const activeObligations =
+            (
+              context.obligations ||
+              []
+            ).filter(
+              (ob: any) =>
+                ob.status ===
+                  'ACTIVE' ||
+                ob.status ===
+                  'active'
+            );
+
+          if (
+            activeObligations.length ===
+            0
+          ) {
+            await sendTelegramMessage(
+              chatId,
+              '📅 مفيش التزامات شهرية نشطة مسجلة حاليًا.'
+            );
+
+            return res
+              .status(200)
+              .json({
+                success: true,
+                received: true,
+              });
+          }
+
+          let selectedObligation: any =
+            null;
+
+          if (
+            activeObligations.length ===
+            1
+          ) {
+            selectedObligation =
+              activeObligations[0];
+          } else {
+            const search =
+              obligationPaymentCandidate.searchText;
+
+            if (search) {
+              selectedObligation =
+                activeObligations.find(
+                  (ob: any) => {
+                    const name =
+                      normalizeArabicText(
+                        String(
+                          ob.name ||
+                            ''
+                        )
+                      );
+
+                    if (!name) {
+                      return false;
+                    }
+
+                    return (
+                      name.includes(
+                        search
+                      ) ||
+                      search.includes(
+                        name
+                      )
+                    );
+                  }
+                ) || null;
+            }
+          }
+
+          if (
+            !selectedObligation
+          ) {
+            const obligationList =
+              activeObligations
+                .map(
+                  (
+                    ob: any,
+                    index: number
+                  ) =>
+                    `${index + 1}. ${
+                      ob.name ||
+                      'التزام بدون اسم'
+                    } — ${formatMoney(
+                      Number(
+                        ob.amount ||
+                          0
+                      )
+                    )} ج.م`
+                )
+                .join('\n');
+
+            await sendTelegramMessage(
+              chatId,
+              `📅 عندك أكتر من التزام ومش قدرت أحدد تقصد أنهي واحد.
+
+الالتزامات الحالية:
+
+${obligationList}
+
+اكتب اسم الالتزام بشكل أوضح، مثال:
+
+دفعت 500 جنيه من التزام الإنترنت`
+            );
+
+            return res
+              .status(200)
+              .json({
+                success: true,
+                received: true,
+              });
+          }
+
+          const monthKey =
+            new Date()
+              .toISOString()
+              .slice(0, 7);
+
+          const dueInfo =
+            getObligationAmountDueForMonth(
+              selectedObligation,
+              monthKey
+            );
+
+          const dueThisMonth =
+            Number(
+              dueInfo.amount || 0
+            );
+
+          if (
+            dueThisMonth <= 0
+          ) {
+            await sendTelegramMessage(
+              chatId,
+              `📅 الالتزام "${
+                selectedObligation.name
+              }" غير مستحق خلال الشهر الحالي.`
+            );
+
+            return res
+              .status(200)
+              .json({
+                success: true,
+                received: true,
+              });
+          }
+
+          const paidThisMonth =
+            context
+              .recentTransactions
+              .filter(
+                (tx) =>
+                  tx.type ===
+                    'expense' &&
+                  tx.relatedObligationId ===
+                    selectedObligation.id &&
+                  String(
+                    tx.date || ''
+                  ).startsWith(
+                    monthKey
+                  )
+              )
+              .reduce(
+                (sum, tx) =>
+                  sum +
+                  Number(
+                    tx.amount || 0
+                  ),
+                0
+              );
+
+          const remainingThisMonth =
+            Math.max(
+              0,
+              dueThisMonth -
+                paidThisMonth
+            );
+
+          if (
+            remainingThisMonth <=
+            0
+          ) {
+            await sendTelegramMessage(
+              chatId,
+              `✅ الالتزام "${
+                selectedObligation.name
+              }" مدفوع بالكامل للشهر الحالي.`
+            );
+
+            return res
+              .status(200)
+              .json({
+                success: true,
+                received: true,
+              });
+          }
+
+          if (
+            obligationPaymentCandidate.amount >
+            remainingThisMonth
+          ) {
+            await sendTelegramMessage(
+              chatId,
+              `⚠️ مبلغ السداد أكبر من المتبقي على الالتزام هذا الشهر.
+
+📅 الالتزام:
+${selectedObligation.name}
+
+💰 المطلوب المتبقي:
+${formatMoney(
+  remainingThisMonth
+)} ج.م
+
+💵 المبلغ اللي كتبته:
+${formatMoney(
+  obligationPaymentCandidate.amount
+)} ج.م`
+            );
+
+            return res
+              .status(200)
+              .json({
+                success: true,
+                received: true,
+              });
+          }
+
+          const wallet =
+            await getPrimaryWallet(
+              linkedUserId
+            );
+
+          if (!wallet) {
+            await sendTelegramMessage(
+              chatId,
+              `⚠️ مفيش محفظة متاحة في حسابك.
+
+أنشئ محفظة من Mizaniya AI الأول.`
+            );
+
+            return res
+              .status(200)
+              .json({
+                success: true,
+                received: true,
+              });
+          }
+
+          const now =
+            Date.now();
+
+          await db
+            .collection(
+              'telegram_pending_transactions'
+            )
+            .doc(
+              String(
+                telegramUserId
+              )
+            )
+            .set({
+              userId:
+                linkedUserId,
+
+              telegramUserId,
+
+              chatId,
+
+              actionType:
+                'obligation_payment',
+
+              obligationId:
+                selectedObligation.id,
+
+              obligationName:
+                selectedObligation.name,
+
+              amount:
+                obligationPaymentCandidate.amount,
+
+              dueThisMonth,
+
+              paidThisMonth,
+
+              remainingBefore:
+                remainingThisMonth,
+
+              walletId:
+                wallet.id,
+
+              walletName:
+                wallet.nameAr ||
+                wallet.name,
+
+              walletCurrency:
+                wallet.currency ||
+                'EGP',
+
+              used: false,
+
+              createdAt:
+                now,
+
+              expiresAt:
+                now +
+                PENDING_TX_EXPIRY_MINUTES *
+                  60 *
+                  1000,
+            });
+
+          await sendTelegramMessage(
+            chatId,
+            `📅 سداد التزام جاهز للتأكيد:
+
+📌 الالتزام:
+${selectedObligation.name}
+
+💰 مبلغ السداد:
+${formatMoney(
+  obligationPaymentCandidate.amount
+)} ج.م
+
+📉 المتبقي قبل السداد:
+${formatMoney(
+  remainingThisMonth
+)} ج.م
+
+✅ المتبقي بعد السداد:
+${formatMoney(
+  Math.max(
+    0,
+    remainingThisMonth -
+      obligationPaymentCandidate.amount
+  )
+)} ج.م
+
+👛 المحفظة:
+${wallet.nameAr || wallet.name}
+
+هل تريد تنفيذ السداد؟
+
+اكتب:
+تأكيد
+
+أو:
+إلغاء`
+          );
+
+          return res
+            .status(200)
+            .json({
+              success: true,
+              received: true,
+            });
+        }
 
         // ======================================================
-        // 1. Detect Debt Payment FIRST
+        // 2. Debt Payment
         // ======================================================
 
         const debtPaymentCandidate =
@@ -1389,7 +2175,7 @@ ${transaction.id}`
           ) {
             await sendTelegramMessage(
               chatId,
-              '💳 مفيش ديون نشطة مسجلة حاليًا في حسابك.'
+              '💳 مفيش ديون نشطة مسجلة حاليًا.'
             );
 
             return res
@@ -1403,7 +2189,6 @@ ${transaction.id}`
           let selectedDebt: any =
             null;
 
-          // One active debt -> automatic selection
           if (
             activeDebts.length ===
             1
@@ -1473,9 +2258,9 @@ ${transaction.id}`
 
 ${debtList}
 
-اكتب اسم الجهة بشكل أوضح، مثال:
+مثال:
 
-دفعت 500 جنيه من دين البنك الأهلي`
+دفعت 500 جنيه من دين CIB`
             );
 
             return res
@@ -1522,7 +2307,7 @@ ${formatMoney(
   debtPaymentCandidate.amount
 )} ج.م
 
-📉 المتبقي على الدين:
+📉 المتبقي:
 ${formatMoney(
   remainingAmount
 )} ج.م`
@@ -1590,10 +2375,7 @@ ${formatMoney(
             `💳 سداد دين جاهز للتأكيد:
 
 🏦 الدين:
-${
-  selectedDebt.creditorName ||
-  'دين'
-}
+${selectedDebt.creditorName || 'دين'}
 
 💰 مبلغ السداد:
 ${formatMoney(
@@ -1632,7 +2414,7 @@ ${formatMoney(
         }
 
         // ======================================================
-        // 2. Detect Income
+        // 3. Income
         // ======================================================
 
         const incomeCandidate =
@@ -1651,7 +2433,7 @@ ${formatMoney(
               chatId,
               `⚠️ مفيش محفظة متاحة في حسابك.
 
-افتح Mizaniya AI وأنشئ محفظة الأول.`
+أنشئ محفظة من Mizaniya AI الأول.`
             );
 
             return res
@@ -1767,7 +2549,9 @@ ${formatMoney(
             `💵 دخل جديد جاهز للتسجيل:
 
 💰 المبلغ:
-${formatMoney(incomeCandidate.amount)} ج.م
+${formatMoney(
+  incomeCandidate.amount
+)} ج.م
 
 📝 الوصف:
 ${incomeCandidate.title}
@@ -1796,7 +2580,7 @@ ${wallet.nameAr || wallet.name}
         }
 
         // ======================================================
-        // 3. Detect Expense
+        // 4. Expense
         // ======================================================
 
         const expenseCandidate =
@@ -1815,7 +2599,7 @@ ${wallet.nameAr || wallet.name}
               chatId,
               `⚠️ مفيش محفظة متاحة في حسابك.
 
-افتح Mizaniya AI وأنشئ محفظة الأول.`
+أنشئ محفظة من Mizaniya AI الأول.`
             );
 
             return res
@@ -1931,13 +2715,17 @@ ${wallet.nameAr || wallet.name}
             `🧾 مصروف جديد جاهز للتسجيل:
 
 💰 المبلغ:
-${formatMoney(expenseCandidate.amount)} ج.م
+${formatMoney(
+  expenseCandidate.amount
+)} ج.م
 
 📝 الوصف:
 ${expenseCandidate.title}
 
 📂 التصنيف:
-${getArabicCategoryName(expenseCandidate.category)}
+${getArabicCategoryName(
+  expenseCandidate.category
+)}
 
 👛 المحفظة:
 ${wallet.nameAr || wallet.name}
@@ -1960,7 +2748,7 @@ ${wallet.nameAr || wallet.name}
         }
 
         // ======================================================
-        // 4. Normal Read Query
+        // 5. Normal Read Query
         // ======================================================
 
         const reply =
@@ -1987,7 +2775,7 @@ ${wallet.nameAr || wallet.name}
         error
       );
 
-      // Return 200 to Telegram to avoid retry storms.
+      // Prevent Telegram retry storms
       return res
         .status(200)
         .json({
@@ -1999,8 +2787,7 @@ ${wallet.nameAr || wallet.name}
 );
 
 // ============================================================
-// Telegram Webhook Setup
-// POST /telegram/setup
+// Setup Telegram Webhook
 // ============================================================
 
 router.post(
@@ -2089,7 +2876,6 @@ router.post(
 
 // ============================================================
 // Telegram Webhook Info
-// GET /telegram/info
 // ============================================================
 
 router.get(
@@ -2153,7 +2939,6 @@ router.get(
 
 // ============================================================
 // Telegram Health
-// GET /telegram/health
 // ============================================================
 
 router.get(
