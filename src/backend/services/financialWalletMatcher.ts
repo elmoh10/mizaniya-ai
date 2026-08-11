@@ -31,38 +31,137 @@ function normalizeArabicText(text: string): string {
 }
 
 // ============================================================
+// Known Wallet Brands
+// ============================================================
+
+function detectExplicitWalletBrand(
+  text: string
+): string | null {
+  const normalized = normalizeArabicText(text);
+
+  if (
+    normalized.includes('فودافون كاش') ||
+    normalized.includes('vodafone cash')
+  ) {
+    return 'vodafone';
+  }
+
+  if (
+    normalized.includes('انستا باي') ||
+    normalized.includes('انستاباي') ||
+    normalized.includes('instapay')
+  ) {
+    return 'instapay';
+  }
+
+  if (
+    normalized.includes('اورنج كاش') ||
+    normalized.includes('orange cash')
+  ) {
+    return 'orange';
+  }
+
+  if (
+    normalized.includes('اتصالات كاش') ||
+    normalized.includes('e& cash') ||
+    normalized.includes('etisalat cash')
+  ) {
+    return 'etisalat';
+  }
+
+  if (
+    normalized.includes('cib') ||
+    normalized.includes('سي اي بي')
+  ) {
+    return 'cib';
+  }
+
+  return null;
+}
+
+// ============================================================
+// Detect Wallet Brand From Wallet
+// ============================================================
+
+function detectWalletBrand(
+  wallet: any
+): string | null {
+  const name = normalizeArabicText(
+    `${wallet.name || ''} ${wallet.nameAr || ''}`
+  );
+
+  if (
+    name.includes('فودافون') ||
+    name.includes('vodafone')
+  ) {
+    return 'vodafone';
+  }
+
+  if (
+    name.includes('انستا') ||
+    name.includes('instapay')
+  ) {
+    return 'instapay';
+  }
+
+  if (
+    name.includes('اورنج') ||
+    name.includes('orange')
+  ) {
+    return 'orange';
+  }
+
+  if (
+    name.includes('اتصالات') ||
+    name.includes('etisalat') ||
+    name.includes('e&')
+  ) {
+    return 'etisalat';
+  }
+
+  if (
+    name.includes('cib') ||
+    name.includes('سي اي بي')
+  ) {
+    return 'cib';
+  }
+
+  return null;
+}
+
+// ============================================================
 // Wallet Aliases
 // ============================================================
 
 function getWalletAliases(wallet: any): string[] {
   const aliases: string[] = [];
 
-  const name = String(wallet.name || '').trim();
-  const nameAr = String(wallet.nameAr || '').trim();
+  const name =
+    String(wallet.name || '').trim();
 
-  if (name) aliases.push(name);
-  if (nameAr) aliases.push(nameAr);
+  const nameAr =
+    String(wallet.nameAr || '').trim();
 
-  const normalizedName = normalizeArabicText(
-    `${name} ${nameAr}`
-  );
-
-  // Cash
-  if (
-    normalizedName.includes('كاش') ||
-    wallet.type === 'cash'
-  ) {
-    aliases.push(
-      'كاش',
-      'نقدي',
-      'نقد',
-      'cash'
-    );
+  if (name) {
+    aliases.push(name);
   }
 
+  if (nameAr) {
+    aliases.push(nameAr);
+  }
+
+  const normalizedName =
+    normalizeArabicText(
+      `${name} ${nameAr}`
+    );
+
+  // ==========================================================
   // Vodafone Cash
+  // ==========================================================
+
   if (
-    normalizedName.includes('فودافون')
+    normalizedName.includes('فودافون') ||
+    normalizedName.includes('vodafone')
   ) {
     aliases.push(
       'فودافون كاش',
@@ -71,7 +170,10 @@ function getWalletAliases(wallet: any): string[] {
     );
   }
 
+  // ==========================================================
   // InstaPay
+  // ==========================================================
+
   if (
     normalizedName.includes('instapay') ||
     normalizedName.includes('انستا')
@@ -84,19 +186,86 @@ function getWalletAliases(wallet: any): string[] {
     );
   }
 
-  // CIB
+  // ==========================================================
+  // Orange Cash
+  // ==========================================================
+
   if (
-    normalizedName.includes('cib')
+    normalizedName.includes('اورنج') ||
+    normalizedName.includes('orange')
+  ) {
+    aliases.push(
+      'اورنج كاش',
+      'orange cash',
+      'اورنج'
+    );
+  }
+
+  // ==========================================================
+  // Etisalat / e& Cash
+  // ==========================================================
+
+  if (
+    normalizedName.includes('اتصالات') ||
+    normalizedName.includes('etisalat') ||
+    normalizedName.includes('e&')
+  ) {
+    aliases.push(
+      'اتصالات كاش',
+      'etisalat cash',
+      'e& cash',
+      'اي اند كاش'
+    );
+  }
+
+  // ==========================================================
+  // CIB
+  // ==========================================================
+
+  if (
+    normalizedName.includes('cib') ||
+    normalizedName.includes('سي اي بي')
   ) {
     aliases.push(
       'cib',
       'سي اي بي',
-      'بنك cib'
+      'بنك cib',
+      'حساب cib'
     );
   }
 
-  // Bank
-  if (wallet.type === 'bank') {
+  // ==========================================================
+  // Generic Cash
+  //
+  // IMPORTANT:
+  // Generic "كاش" aliases are only added to a real cash wallet
+  // that does NOT belong to a branded wallet such as Vodafone.
+  // ==========================================================
+
+  const walletBrand =
+    detectWalletBrand(wallet);
+
+  if (
+    wallet.type === 'cash' &&
+    !walletBrand
+  ) {
+    aliases.push(
+      'كاش',
+      'النقدي',
+      'نقدي',
+      'نقد',
+      'cash'
+    );
+  }
+
+  // ==========================================================
+  // Generic Bank
+  // ==========================================================
+
+  if (
+    wallet.type === 'bank' &&
+    !walletBrand
+  ) {
     aliases.push(
       'البنك',
       'حساب البنك',
@@ -104,7 +273,10 @@ function getWalletAliases(wallet: any): string[] {
     );
   }
 
+  // ==========================================================
   // Card
+  // ==========================================================
+
   if (
     wallet.type === 'card' ||
     wallet.type === 'credit'
@@ -118,8 +290,13 @@ function getWalletAliases(wallet: any): string[] {
     );
   }
 
+  // ==========================================================
   // Savings
-  if (wallet.type === 'savings') {
+  // ==========================================================
+
+  if (
+    wallet.type === 'savings'
+  ) {
     aliases.push(
       'الادخار',
       'التحويش',
@@ -144,31 +321,55 @@ function calculateScore(
   source: string,
   target: string
 ): number {
-  const a = normalizeArabicText(source);
-  const b = normalizeArabicText(target);
+  const a =
+    normalizeArabicText(source);
+
+  const b =
+    normalizeArabicText(target);
 
   if (!a || !b) {
     return 0;
   }
 
+  // Exact
   if (a === b) {
     return 1;
   }
 
-  if (
-    a.includes(b) ||
-    b.includes(a)
-  ) {
-    return 0.95;
+  // ==========================================================
+  // Full phrase contained
+  // Longer aliases receive better scores.
+  // ==========================================================
+
+  if (a.includes(b)) {
+    const ratio =
+      b.length / a.length;
+
+    return Math.min(
+      0.98,
+      0.75 + ratio * 0.23
+    );
   }
 
-  const sourceWords = a
-    .split(' ')
-    .filter(Boolean);
+  if (b.includes(a)) {
+    const ratio =
+      a.length / b.length;
 
-  const targetWords = b
-    .split(' ')
-    .filter(Boolean);
+    return Math.min(
+      0.94,
+      0.70 + ratio * 0.24
+    );
+  }
+
+  const sourceWords =
+    a
+      .split(' ')
+      .filter(Boolean);
+
+  const targetWords =
+    b
+      .split(' ')
+      .filter(Boolean);
 
   if (
     sourceWords.length === 0 ||
@@ -179,26 +380,28 @@ function calculateScore(
 
   let matches = 0;
 
-  for (const targetWord of targetWords) {
+  for (
+    const targetWord
+    of targetWords
+  ) {
     if (
       sourceWords.some(
         (sourceWord) =>
-          sourceWord === targetWord ||
-          sourceWord.includes(targetWord) ||
-          targetWord.includes(sourceWord)
+          sourceWord === targetWord
       )
     ) {
       matches++;
     }
   }
 
-  return (
+  const wordRatio =
     matches /
     Math.max(
       sourceWords.length,
       targetWords.length
-    )
-  );
+    );
+
+  return wordRatio * 0.8;
 }
 
 // ============================================================
@@ -211,15 +414,50 @@ export function extractWalletSearchText(
   const normalized =
     normalizeArabicText(text);
 
+  // ==========================================================
+  // Explicit branded wallets should be detected before
+  // generic "من ..." extraction.
+  // ==========================================================
+
+  const brand =
+    detectExplicitWalletBrand(
+      normalized
+    );
+
+  if (brand === 'vodafone') {
+    return 'فودافون كاش';
+  }
+
+  if (brand === 'instapay') {
+    return 'انستا باي';
+  }
+
+  if (brand === 'orange') {
+    return 'اورنج كاش';
+  }
+
+  if (brand === 'etisalat') {
+    return 'اتصالات كاش';
+  }
+
+  if (brand === 'cib') {
+    // Don't immediately return CIB here,
+    // because "من دين CIB" could mean creditor, not wallet.
+  }
+
   const patterns = [
-    /من\s+(.+)$/,
-    /على\s+(.+)$/,
-    /علي\s+(.+)$/,
-    /بواسطة\s+(.+)$/,
-    /باستخدام\s+(.+)$/,
+    /(?:من|على|علي|بواسطه|باستخدام)\s+(فودافون كاش)$/,
+    /(?:من|على|علي|بواسطه|باستخدام)\s+(انستا باي|انستاباي|instapay)$/,
+    /(?:من|على|علي|بواسطه|باستخدام)\s+(اورنج كاش)$/,
+    /(?:من|على|علي|بواسطه|باستخدام)\s+(اتصالات كاش)$/,
+    /(?:من|على|علي|بواسطه|باستخدام)\s+(كاش)$/,
+    /(?:من|على|علي|بواسطه|باستخدام)\s+(.+)$/,
   ];
 
-  for (const pattern of patterns) {
+  for (
+    const pattern
+    of patterns
+  ) {
     const match =
       normalized.match(pattern);
 
@@ -235,7 +473,7 @@ export function extractWalletSearchText(
 }
 
 // ============================================================
-// Detect explicit wallet intent
+// Explicit Wallet Reference
 // ============================================================
 
 export function hasExplicitWalletReference(
@@ -244,12 +482,18 @@ export function hasExplicitWalletReference(
   const normalized =
     normalizeArabicText(text);
 
+  if (
+    detectExplicitWalletBrand(
+      normalized
+    )
+  ) {
+    return true;
+  }
+
   return (
-    normalized.includes(' من ') ||
-    normalized.includes(' علي ') ||
-    normalized.includes(' على ') ||
-    normalized.includes('بواسطه') ||
-    normalized.includes('باستخدام')
+    /(?:من|على|علي|بواسطه|باستخدام)\s+(?:كاش|البنك|الفيزا|الكارت|حساب\s+\S+)/.test(
+      normalized
+    )
   );
 }
 
@@ -262,7 +506,9 @@ export async function matchWalletForUser(
   text: string
 ): Promise<WalletMatchResult> {
   const wallets =
-    await getWalletsForUser(userId);
+    await getWalletsForUser(
+      userId
+    );
 
   if (!wallets.length) {
     return {
@@ -275,10 +521,12 @@ export async function matchWalletForUser(
   }
 
   const searchText =
-    extractWalletSearchText(text);
+    extractWalletSearchText(
+      text
+    );
 
   // ==========================================================
-  // No wallet explicitly mentioned
+  // User did not specify wallet
   // ==========================================================
 
   if (!searchText) {
@@ -286,7 +534,8 @@ export async function matchWalletForUser(
       wallets.find(
         (wallet: any) =>
           wallet.isPrimary === true
-      ) || wallets[0];
+      ) ||
+      wallets[0];
 
     return {
       wallet: primary,
@@ -298,37 +547,96 @@ export async function matchWalletForUser(
   }
 
   // ==========================================================
-  // Score wallets
+  // Brand Priority
+  //
+  // If the message says "Vodafone Cash", branded wallets
+  // automatically beat generic Cash.
+  // ==========================================================
+
+  const explicitBrand =
+    detectExplicitWalletBrand(
+      searchText
+    );
+
+  if (explicitBrand) {
+    const brandedWallets =
+      wallets.filter(
+        (wallet: any) =>
+          detectWalletBrand(wallet) ===
+          explicitBrand
+      );
+
+    if (
+      brandedWallets.length === 1
+    ) {
+      return {
+        wallet:
+          brandedWallets[0],
+        wallets:
+          brandedWallets,
+        confidence: 1,
+        searchText,
+        ambiguous: false,
+      };
+    }
+
+    if (
+      brandedWallets.length > 1
+    ) {
+      return {
+        wallet: null,
+        wallets:
+          brandedWallets,
+        confidence: 1,
+        searchText,
+        ambiguous: true,
+      };
+    }
+  }
+
+  // ==========================================================
+  // Score All Wallets
   // ==========================================================
 
   const scored =
     wallets
-      .map((wallet: any) => {
-        const aliases =
-          getWalletAliases(wallet);
-
-        let bestScore = 0;
-
-        for (const alias of aliases) {
-          const score =
-            calculateScore(
-              searchText,
-              alias
+      .map(
+        (wallet: any) => {
+          const aliases =
+            getWalletAliases(
+              wallet
             );
 
-          if (score > bestScore) {
-            bestScore = score;
-          }
-        }
+          let bestScore = 0;
 
-        return {
-          wallet,
-          score: bestScore,
-        };
-      })
+          for (
+            const alias
+            of aliases
+          ) {
+            const score =
+              calculateScore(
+                searchText,
+                alias
+              );
+
+            if (
+              score > bestScore
+            ) {
+              bestScore =
+                score;
+            }
+          }
+
+          return {
+            wallet,
+            score:
+              bestScore,
+          };
+        }
+      )
       .filter(
         (item) =>
-          item.score >= 0.5
+          item.score >= 0.55
       )
       .sort(
         (a, b) =>
@@ -336,7 +644,7 @@ export async function matchWalletForUser(
       );
 
   // ==========================================================
-  // No match
+  // No Match
   // ==========================================================
 
   if (!scored.length) {
@@ -350,10 +658,12 @@ export async function matchWalletForUser(
   }
 
   // ==========================================================
-  // One match
+  // One Match
   // ==========================================================
 
-  if (scored.length === 1) {
+  if (
+    scored.length === 1
+  ) {
     return {
       wallet:
         scored[0].wallet,
@@ -367,10 +677,6 @@ export async function matchWalletForUser(
     };
   }
 
-  // ==========================================================
-  // Multiple matches
-  // ==========================================================
-
   const best =
     scored[0];
 
@@ -381,7 +687,14 @@ export async function matchWalletForUser(
     best.score -
     second.score;
 
-  if (difference >= 0.2) {
+  // ==========================================================
+  // Strong winner
+  // ==========================================================
+
+  if (
+    best.score >= 0.9 &&
+    difference >= 0.1
+  ) {
     return {
       wallet:
         best.wallet,
@@ -396,6 +709,28 @@ export async function matchWalletForUser(
       ambiguous: false,
     };
   }
+
+  if (
+    difference >= 0.18
+  ) {
+    return {
+      wallet:
+        best.wallet,
+      wallets:
+        scored.map(
+          (item) =>
+            item.wallet
+        ),
+      confidence:
+        best.score,
+      searchText,
+      ambiguous: false,
+    };
+  }
+
+  // ==========================================================
+  // Real Ambiguity
+  // ==========================================================
 
   return {
     wallet: null,
