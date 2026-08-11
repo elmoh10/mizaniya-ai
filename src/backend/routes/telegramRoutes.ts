@@ -8,6 +8,11 @@ import {
   getObligationAmountDueForMonth,
 } from '../services/financialContextService';
 
+import {
+  matchWalletForUser,
+  hasExplicitWalletReference,
+} from '../services/financialWalletMatcher';
+
 import { transactionRepository } from '../repositories/transactionRepository';
 import { billRepository } from '../repositories/budgetAndGoalRepositories';
 import { getWalletsForUser } from '../services/walletService';
@@ -1340,7 +1345,7 @@ ${code}
       if (normalized === 'billtest') {
         await sendTelegramMessage(
           chatId,
-          '✅ BILL ROUTER V3 شغال'
+          '✅ BILL ROUTER V4 + WALLET MATCHER شغال'
         );
 
         return res.status(200).json({
@@ -2497,7 +2502,46 @@ ${transaction.id}`
               });
             }
 
-            const wallet = await getPrimaryWallet(linkedUserId);
+            const walletMatch = await matchWalletForUser(
+              linkedUserId,
+              text || ''
+            );
+
+            if (walletMatch.ambiguous) {
+              const walletNames = walletMatch.wallets
+                .map((item: any) => item.nameAr || item.name || item.id)
+                .join('، ');
+
+              await sendTelegramMessage(
+                chatId,
+                `👛 لقيت أكتر من محفظة ممكن تقصدها:
+
+${walletNames}
+
+حدد المحفظة بالاسم وابعت العملية من جديد.`
+              );
+
+              return res.status(200).json({
+                success: true,
+                received: true,
+              });
+            }
+
+            if (hasExplicitWalletReference(text || '') && !walletMatch.wallet) {
+              await sendTelegramMessage(
+                chatId,
+                `⚠️ مش لاقي المحفظة اللي ذكرتها: ${walletMatch.searchText || 'غير معروفة'}
+
+اكتب اسم المحفظة زي ما هو مسجل في Mizaniya AI.`
+              );
+
+              return res.status(200).json({
+                success: true,
+                received: true,
+              });
+            }
+
+            const wallet = walletMatch.wallet;
 
             if (!wallet) {
               await sendTelegramMessage(
@@ -2721,10 +2765,46 @@ ${formatMoney(typedAmount)} ج.م
                 });
             }
 
-            const wallet =
-              await getPrimaryWallet(
-                linkedUserId
+            const walletMatch = await matchWalletForUser(
+              linkedUserId,
+              text || ''
+            );
+
+            if (walletMatch.ambiguous) {
+              const walletNames = walletMatch.wallets
+                .map((item: any) => item.nameAr || item.name || item.id)
+                .join('، ');
+
+              await sendTelegramMessage(
+                chatId,
+                `👛 لقيت أكتر من محفظة ممكن تقصدها:
+
+${walletNames}
+
+حدد المحفظة بالاسم وابعت العملية من جديد.`
               );
+
+              return res.status(200).json({
+                success: true,
+                received: true,
+              });
+            }
+
+            if (hasExplicitWalletReference(text || '') && !walletMatch.wallet) {
+              await sendTelegramMessage(
+                chatId,
+                `⚠️ مش لاقي المحفظة اللي ذكرتها: ${walletMatch.searchText || 'غير معروفة'}
+
+اكتب اسم المحفظة زي ما هو مسجل في Mizaniya AI.`
+              );
+
+              return res.status(200).json({
+                success: true,
+                received: true,
+              });
+            }
+
+            const wallet = walletMatch.wallet;
 
             if (!wallet) {
               await sendTelegramMessage(
@@ -2945,10 +3025,46 @@ ${formatMoney(amount)} ج.م`
                 });
             }
 
-            const wallet =
-              await getPrimaryWallet(
-                linkedUserId
+            const walletMatch = await matchWalletForUser(
+              linkedUserId,
+              text || ''
+            );
+
+            if (walletMatch.ambiguous) {
+              const walletNames = walletMatch.wallets
+                .map((item: any) => item.nameAr || item.name || item.id)
+                .join('، ');
+
+              await sendTelegramMessage(
+                chatId,
+                `👛 لقيت أكتر من محفظة ممكن تقصدها:
+
+${walletNames}
+
+حدد المحفظة بالاسم وابعت العملية من جديد.`
               );
+
+              return res.status(200).json({
+                success: true,
+                received: true,
+              });
+            }
+
+            if (hasExplicitWalletReference(text || '') && !walletMatch.wallet) {
+              await sendTelegramMessage(
+                chatId,
+                `⚠️ مش لاقي المحفظة اللي ذكرتها: ${walletMatch.searchText || 'غير معروفة'}
+
+اكتب اسم المحفظة زي ما هو مسجل في Mizaniya AI.`
+              );
+
+              return res.status(200).json({
+                success: true,
+                received: true,
+              });
+            }
+
+            const wallet = walletMatch.wallet;
 
             if (!wallet) {
               await sendTelegramMessage(
@@ -3402,10 +3518,46 @@ ${formatMoney(
               });
           }
 
-          const wallet =
-            await getPrimaryWallet(
-              linkedUserId
+          const walletMatch = await matchWalletForUser(
+              linkedUserId,
+              text || ''
             );
+
+            if (walletMatch.ambiguous) {
+              const walletNames = walletMatch.wallets
+                .map((item: any) => item.nameAr || item.name || item.id)
+                .join('، ');
+
+              await sendTelegramMessage(
+                chatId,
+                `👛 لقيت أكتر من محفظة ممكن تقصدها:
+
+${walletNames}
+
+حدد المحفظة بالاسم وابعت العملية من جديد.`
+              );
+
+              return res.status(200).json({
+                success: true,
+                received: true,
+              });
+            }
+
+            if (hasExplicitWalletReference(text || '') && !walletMatch.wallet) {
+              await sendTelegramMessage(
+                chatId,
+                `⚠️ مش لاقي المحفظة اللي ذكرتها: ${walletMatch.searchText || 'غير معروفة'}
+
+اكتب اسم المحفظة زي ما هو مسجل في Mizaniya AI.`
+              );
+
+              return res.status(200).json({
+                success: true,
+                received: true,
+              });
+            }
+
+            const wallet = walletMatch.wallet;
 
           if (!wallet) {
             await sendTelegramMessage(
@@ -3824,10 +3976,46 @@ ${formatMoney(
             : null;
 
         if (incomeCandidate) {
-          const wallet =
-            await getPrimaryWallet(
-              linkedUserId
+          const walletMatch = await matchWalletForUser(
+              linkedUserId,
+              text || ''
             );
+
+            if (walletMatch.ambiguous) {
+              const walletNames = walletMatch.wallets
+                .map((item: any) => item.nameAr || item.name || item.id)
+                .join('، ');
+
+              await sendTelegramMessage(
+                chatId,
+                `👛 لقيت أكتر من محفظة ممكن تقصدها:
+
+${walletNames}
+
+حدد المحفظة بالاسم وابعت العملية من جديد.`
+              );
+
+              return res.status(200).json({
+                success: true,
+                received: true,
+              });
+            }
+
+            if (hasExplicitWalletReference(text || '') && !walletMatch.wallet) {
+              await sendTelegramMessage(
+                chatId,
+                `⚠️ مش لاقي المحفظة اللي ذكرتها: ${walletMatch.searchText || 'غير معروفة'}
+
+اكتب اسم المحفظة زي ما هو مسجل في Mizaniya AI.`
+              );
+
+              return res.status(200).json({
+                success: true,
+                received: true,
+              });
+            }
+
+            const wallet = walletMatch.wallet;
 
           if (!wallet) {
             await sendTelegramMessage(
@@ -3993,10 +4181,46 @@ ${wallet.nameAr || wallet.name}
             : null;
 
         if (expenseCandidate) {
-          const wallet =
-            await getPrimaryWallet(
-              linkedUserId
+          const walletMatch = await matchWalletForUser(
+              linkedUserId,
+              text || ''
             );
+
+            if (walletMatch.ambiguous) {
+              const walletNames = walletMatch.wallets
+                .map((item: any) => item.nameAr || item.name || item.id)
+                .join('، ');
+
+              await sendTelegramMessage(
+                chatId,
+                `👛 لقيت أكتر من محفظة ممكن تقصدها:
+
+${walletNames}
+
+حدد المحفظة بالاسم وابعت العملية من جديد.`
+              );
+
+              return res.status(200).json({
+                success: true,
+                received: true,
+              });
+            }
+
+            if (hasExplicitWalletReference(text || '') && !walletMatch.wallet) {
+              await sendTelegramMessage(
+                chatId,
+                `⚠️ مش لاقي المحفظة اللي ذكرتها: ${walletMatch.searchText || 'غير معروفة'}
+
+اكتب اسم المحفظة زي ما هو مسجل في Mizaniya AI.`
+              );
+
+              return res.status(200).json({
+                success: true,
+                received: true,
+              });
+            }
+
+            const wallet = walletMatch.wallet;
 
           if (!wallet) {
             await sendTelegramMessage(
