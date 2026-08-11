@@ -180,6 +180,18 @@ function detectExpenseCategory(
   const normalized =
     normalizeArabicText(text);
 
+  if (normalized === 'billtest') {
+  await sendTelegramMessage(
+    chatId,
+    '✅ BILL ROUTER V2 شغال'
+  );
+
+  return res.status(200).json({
+    success: true,
+    received: true,
+  });
+}
+
   if (
     normalized.includes('بنزين') ||
     normalized.includes('سولار') ||
