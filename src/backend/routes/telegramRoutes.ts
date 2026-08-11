@@ -15,6 +15,7 @@ import { transactionCreateSchema, billCreateSchema } from '../validators/schemas
 import { recordDebtPayment } from '../services/debtService';
 import { createObligation } from '../services/obligationService';
 import { routeFinancialIntent } from '../services/financialIntentRouter';
+import { matchFinancialContext } from '../services/financialContextMatcher';
 
 import { CategoryType } from '../../types';
 
@@ -2557,6 +2558,495 @@ ${transaction.id}`
               success: true,
               received: true,
             });
+          }
+        }
+
+        // ======================================================
+        // Contextual Matching V2
+        // Handles natural phrases such as: "دفعت النت 600"
+        // before they fall through to a normal expense.
+        // ======================================================
+
+        if (
+          smartIntent.intent === 'CREATE_EXPENSE' &&
+          Number(smartIntent.amount || 0) > 0
+        ) {
+          const contextualMatch =
+            await matchFinancialContext(
+              linkedUserId,
+              text
+            );
+
+          console.log(
+            'Telegram contextual match:',
+            JSON.stringify({
+              type: contextualMatch.type,
+              confidence: contextualMatch.confidence,
+              billId: contextualMatch.bill?.id,
+              obligationId: contextualMatch.obligation?.id,
+            })
+          );
+
+          // ------------------------------------------------------
+          // Ambiguous: both a Bill and an Obligation match.
+          // Never guess which one the user meant.
+          // ------------------------------------------------------
+
+          if (
+            contextualMatch.type === 'AMBIGUOUS'
+          ) {
+            const bill = contextualMatch.bill;
+            const obligation =
+              contextualMatch.obligation;
+
+            await sendTelegramMessage(
+              chatId,
+              `⚠️ لقيت أكتر من حاجة مرتبطة بالرسالة دي ومش هختار من نفسي.
+
+${
+                bill
+                  ? `🧾 فاتورة: ${
+                      bill.titleAr ||
+                      bill.title ||
+                      'فاتورة'
+                    } — ${formatMoney(
+                      Number(
+                        bill.amount || 0
+                      )
+                    )} ج.م\n`
+                  : ''
+              }${
+                obligation
+                  ? `📅 التزام: ${
+                      obligation.name ||
+                      'التزام'
+                    } — ${formatMoney(
+                      Number(
+                        obligation.amount ||
+                          0
+                      )
+                    )} ج.م\n`
+                  : ''
+              }
+اكتب بشكل أوضح، مثلًا:
+
+دفعت فاتورة النت
+
+أو:
+
+دفعت 600 جنيه من التزام النت`
+            );
+
+            return res
+              .status(200)
+              .json({
+                success: true,
+                received: true,
+              });
+          }
+
+          // ------------------------------------------------------
+          // Natural-language Bill Payment
+          // Example: "دفعت النت 600"
+          // ------------------------------------------------------
+
+          if (
+            contextualMatch.type === 'BILL' &&
+            contextualMatch.bill &&
+            contextualMatch.confidence >= 0.55
+          ) {
+            const selectedBill: any =
+              contextualMatch.bill;
+
+            const billAmount = Number(
+              selectedBill.amount || 0
+            );
+
+            const typedAmount = Number(
+              smartIntent.amount || 0
+            );
+
+            if (
+              !Number.isFinite(billAmount) ||
+              billAmount <= 0
+            ) {
+              await sendTelegramMessage(
+                chatId,
+                '⚠️ الفاتورة المطابقة موجودة لكن مبلغها غير صالح.'
+              );
+
+              return res
+                .status(200)
+                .json({
+                  success: true,
+                  received: true,
+                });
+            }
+
+            if (
+              Math.abs(
+                typedAmount - billAmount
+              ) > 0.01
+            ) {
+              await sendTelegramMessage(
+                chatId,
+                `⚠️ لقيت فاتورة مطابقة، لكن المبلغ اللي كتبته مختلف عن قيمتها.
+
+🧾 الفاتورة:
+${
+  selectedBill.titleAr ||
+  selectedBill.title ||
+  'فاتورة'
+}
+
+💰 القيمة المسجلة:
+${formatMoney(billAmount)} ج.م
+
+💵 المبلغ اللي كتبته:
+${formatMoney(typedAmount)} ج.م
+
+لو تقصد سداد الفاتورة المسجلة ابعت:
+دفعت فاتورة ${
+  selectedBill.titleAr ||
+  selectedBill.title ||
+  ''
+}`
+              );
+
+              return res
+                .status(200)
+                .json({
+                  success: true,
+                  received: true,
+                });
+            }
+
+            const wallet =
+              await getPrimaryWallet(
+                linkedUserId
+              );
+
+            if (!wallet) {
+              await sendTelegramMessage(
+                chatId,
+                '⚠️ مفيش محفظة متاحة في حسابك. أنشئ محفظة من Mizaniya AI الأول.'
+              );
+
+              return res
+                .status(200)
+                .json({
+                  success: true,
+                  received: true,
+                });
+            }
+
+            const now = Date.now();
+
+            await db
+              .collection(
+                'telegram_pending_transactions'
+              )
+              .doc(
+                String(telegramUserId)
+              )
+              .set({
+                userId: linkedUserId,
+                telegramUserId,
+                chatId,
+                actionType:
+                  'bill_payment',
+                billId:
+                  selectedBill.id,
+                billTitle:
+                  selectedBill.titleAr ||
+                  selectedBill.title,
+                amount: billAmount,
+                walletId: wallet.id,
+                walletName:
+                  wallet.nameAr ||
+                  wallet.name,
+                walletCurrency:
+                  wallet.currency ||
+                  'EGP',
+                used: false,
+                createdAt: now,
+                expiresAt:
+                  now +
+                  PENDING_TX_EXPIRY_MINUTES *
+                    60 *
+                    1000,
+              });
+
+            await sendTelegramMessage(
+              chatId,
+              `🧠 فهمت إنك غالبًا تقصد سداد فاتورة موجودة عندك.
+
+🧾 الفاتورة:
+${
+  selectedBill.titleAr ||
+  selectedBill.title
+}
+
+💰 المبلغ:
+${formatMoney(billAmount)} ج.م
+
+👛 المحفظة:
+${wallet.nameAr || wallet.name}
+
+بعد التأكيد سيتم:
+✅ تسجيل المصروف
+✅ خصم المبلغ من المحفظة
+✅ تعليم الفاتورة كمدفوعة
+✅ تحديث الميزانية
+
+اكتب:
+تأكيد
+
+أو:
+إلغاء`
+            );
+
+            return res
+              .status(200)
+              .json({
+                success: true,
+                received: true,
+              });
+          }
+
+          // ------------------------------------------------------
+          // Natural-language Obligation Payment
+          // Example: "دفعت النت 600"
+          // ------------------------------------------------------
+
+          if (
+            contextualMatch.type ===
+              'OBLIGATION' &&
+            contextualMatch.obligation &&
+            contextualMatch.confidence >= 0.55
+          ) {
+            const selectedObligation: any =
+              contextualMatch.obligation;
+
+            const amount = Number(
+              smartIntent.amount || 0
+            );
+
+            const context =
+              await getTrustedFinancialContext(
+                linkedUserId
+              );
+
+            const monthKey =
+              new Date()
+                .toISOString()
+                .slice(0, 7);
+
+            const dueInfo =
+              getObligationAmountDueForMonth(
+                selectedObligation,
+                monthKey
+              );
+
+            const dueThisMonth = Number(
+              dueInfo.amount || 0
+            );
+
+            if (dueThisMonth <= 0) {
+              await sendTelegramMessage(
+                chatId,
+                `📅 لقيت التزام "${
+                  selectedObligation.name ||
+                  'التزام'
+                }"، لكنه غير مستحق خلال الشهر الحالي.`
+              );
+
+              return res
+                .status(200)
+                .json({
+                  success: true,
+                  received: true,
+                });
+            }
+
+            const paidThisMonth =
+              context.recentTransactions
+                .filter(
+                  (tx) =>
+                    tx.type ===
+                      'expense' &&
+                    tx.relatedObligationId ===
+                      selectedObligation.id &&
+                    String(
+                      tx.date || ''
+                    ).startsWith(
+                      monthKey
+                    )
+                )
+                .reduce(
+                  (sum, tx) =>
+                    sum +
+                    Number(
+                      tx.amount || 0
+                    ),
+                  0
+                );
+
+            const remainingThisMonth =
+              Math.max(
+                0,
+                dueThisMonth -
+                  paidThisMonth
+              );
+
+            if (
+              remainingThisMonth <= 0
+            ) {
+              await sendTelegramMessage(
+                chatId,
+                `✅ الالتزام "${
+                  selectedObligation.name ||
+                  'التزام'
+                }" مدفوع بالكامل للشهر الحالي.`
+              );
+
+              return res
+                .status(200)
+                .json({
+                  success: true,
+                  received: true,
+                });
+            }
+
+            if (
+              amount > remainingThisMonth
+            ) {
+              await sendTelegramMessage(
+                chatId,
+                `⚠️ فهمت إن الرسالة مرتبطة بالتزام "${
+                  selectedObligation.name ||
+                  'التزام'
+                }"، لكن مبلغ السداد أكبر من المتبقي لهذا الشهر.
+
+💰 المتبقي:
+${formatMoney(
+  remainingThisMonth
+)} ج.م
+
+💵 المبلغ المكتوب:
+${formatMoney(amount)} ج.م`
+              );
+
+              return res
+                .status(200)
+                .json({
+                  success: true,
+                  received: true,
+                });
+            }
+
+            const wallet =
+              await getPrimaryWallet(
+                linkedUserId
+              );
+
+            if (!wallet) {
+              await sendTelegramMessage(
+                chatId,
+                `⚠️ مفيش محفظة متاحة في حسابك.
+
+أنشئ محفظة من Mizaniya AI الأول.`
+              );
+
+              return res
+                .status(200)
+                .json({
+                  success: true,
+                  received: true,
+                });
+            }
+
+            const now = Date.now();
+
+            await db
+              .collection(
+                'telegram_pending_transactions'
+              )
+              .doc(
+                String(telegramUserId)
+              )
+              .set({
+                userId: linkedUserId,
+                telegramUserId,
+                chatId,
+                actionType:
+                  'obligation_payment',
+                obligationId:
+                  selectedObligation.id,
+                obligationName:
+                  selectedObligation.name,
+                amount,
+                dueThisMonth,
+                paidThisMonth,
+                remainingBefore:
+                  remainingThisMonth,
+                walletId: wallet.id,
+                walletName:
+                  wallet.nameAr ||
+                  wallet.name,
+                walletCurrency:
+                  wallet.currency ||
+                  'EGP',
+                used: false,
+                createdAt: now,
+                expiresAt:
+                  now +
+                  PENDING_TX_EXPIRY_MINUTES *
+                    60 *
+                    1000,
+              });
+
+            await sendTelegramMessage(
+              chatId,
+              `🧠 لقيت التزام متكرر مطابق للرسالة دي.
+
+📅 الالتزام:
+${selectedObligation.name}
+
+💰 مبلغ السداد:
+${formatMoney(amount)} ج.م
+
+📉 المتبقي قبل السداد:
+${formatMoney(
+  remainingThisMonth
+)} ج.م
+
+✅ المتبقي بعد السداد:
+${formatMoney(
+  Math.max(
+    0,
+    remainingThisMonth - amount
+  )
+)} ج.م
+
+👛 المحفظة:
+${wallet.nameAr || wallet.name}
+
+هل تريد تسجيله كسداد للالتزام؟
+
+اكتب:
+تأكيد
+
+أو:
+إلغاء`
+            );
+
+            return res
+              .status(200)
+              .json({
+                success: true,
+                received: true,
+              });
           }
         }
 
