@@ -9,8 +9,9 @@ import {
 } from '../services/financialContextService';
 
 import { transactionRepository } from '../repositories/transactionRepository';
+import { billRepository } from '../repositories/budgetAndGoalRepositories';
 import { getWalletsForUser } from '../services/walletService';
-import { transactionCreateSchema } from '../validators/schemas';
+import { transactionCreateSchema, billCreateSchema } from '../validators/schemas';
 import { recordDebtPayment } from '../services/debtService';
 import { createObligation } from '../services/obligationService';
 
@@ -179,18 +180,6 @@ function detectExpenseCategory(
 ): CategoryType {
   const normalized =
     normalizeArabicText(text);
-
-  if (normalized === 'billtest') {
-  await sendTelegramMessage(
-    chatId,
-    '✅ BILL ROUTER V2 شغال'
-  );
-
-  return res.status(200).json({
-    success: true,
-    received: true,
-  });
-}
 
   if (
     normalized.includes('بنزين') ||
@@ -593,6 +582,160 @@ function extractObligationPaymentCandidate(
 }
 
 // ============================================================
+// Bill Helpers & Parsers
+// ============================================================
+
+function buildDueDateFromDay(day: number): string {
+  const now = new Date();
+  let year = now.getFullYear();
+  let month = now.getMonth();
+
+  const safeDay = Math.max(1, Math.min(31, Math.trunc(day)));
+  const lastDayThisMonth = new Date(year, month + 1, 0).getDate();
+  let candidateDay = Math.min(safeDay, lastDayThisMonth);
+  let candidate = new Date(year, month, candidateDay);
+  const today = new Date(year, month, now.getDate());
+
+  // If that due day already passed, use next month.
+  if (candidate < today) {
+    month += 1;
+    if (month > 11) {
+      month = 0;
+      year += 1;
+    }
+    const lastDayNextMonth = new Date(year, month + 1, 0).getDate();
+    candidateDay = Math.min(safeDay, lastDayNextMonth);
+    candidate = new Date(year, month, candidateDay);
+  }
+
+  return `${candidate.getFullYear()}-${String(candidate.getMonth() + 1).padStart(2, '0')}-${String(candidate.getDate()).padStart(2, '0')}`;
+}
+
+function extractCreateBillCandidate(
+  text: string
+): {
+  title: string;
+  amount: number;
+  dueDate: string;
+} | null {
+  const normalized = normalizeArabicText(text);
+
+  const hasBillWord =
+    normalized.includes('فاتوره');
+
+  const hasCreateWord =
+    normalized.includes('اضف') ||
+    normalized.includes('سجل') ||
+    normalized.includes('انشئ') ||
+    normalized.includes('اعمل');
+
+  const hasPaymentWord =
+    normalized.includes('دفعت') ||
+    normalized.includes('سددت') ||
+    normalized.includes('سداد');
+
+  if (!hasBillWord || !hasCreateWord || hasPaymentWord) {
+    return null;
+  }
+
+  const amountMatch = text.match(/(\d+(?:[.,]\d+)?)/);
+  if (!amountMatch) {
+    return null;
+  }
+
+  const amount = Number(amountMatch[1].replace(',', '.'));
+  if (!Number.isFinite(amount) || amount <= 0) {
+    return null;
+  }
+
+  const explicitDateMatch = text.match(/\b(20\d{2})-(\d{1,2})-(\d{1,2})\b/);
+  const dueDayMatch = text.match(/(?:يوم|بتاريخ|استحقاق|مستحق(?:ة)?(?:\s+يوم)?)\s*(\d{1,2})\b/i);
+
+  let dueDate: string;
+
+  if (explicitDateMatch) {
+    const year = Number(explicitDateMatch[1]);
+    const month = Math.max(1, Math.min(12, Number(explicitDateMatch[2])));
+    const day = Math.max(1, Math.min(31, Number(explicitDateMatch[3])));
+    const lastDay = new Date(year, month, 0).getDate();
+
+    dueDate = `${year}-${String(month).padStart(2, '0')}-${String(Math.min(day, lastDay)).padStart(2, '0')}`;
+  } else if (dueDayMatch) {
+    dueDate = buildDueDateFromDay(Number(dueDayMatch[1]));
+  } else {
+    dueDate = new Date().toISOString().split('T')[0];
+  }
+
+  let title = text
+    .replace(amountMatch[0], '')
+    .replace(/\b20\d{2}-\d{1,2}-\d{1,2}\b/g, '')
+    .replace(/(?:يوم|بتاريخ|استحقاق|مستحق(?:ة)?(?:\s+يوم)?)\s*\d{1,2}\b/gi, '')
+    .replace(/جنيه|جنية|جنيها|جنيهًا|ج\.م/gi, '')
+    .replace(/أضف|اضف|إضافة|اضافة|سجل|أنشئ|انشئ|اعمل/gi, '')
+    .replace(/فاتورة|فاتوره/gi, '')
+    .replace(/بقيمة|بقيمه|بمبلغ|قيمتها|مبلغها/gi, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (title.length < 2) {
+    title = 'فاتورة';
+  }
+
+  return {
+    title,
+    amount,
+    dueDate,
+  };
+}
+
+function extractBillPaymentCandidate(
+  text: string
+): {
+  searchText: string;
+  amount?: number;
+} | null {
+  const normalized = normalizeArabicText(text);
+
+  const hasPaymentIntent =
+    normalized.includes('دفعت') ||
+    normalized.includes('سددت') ||
+    normalized.includes('سداد');
+
+  const hasBillWord = normalized.includes('فاتوره');
+
+  if (!hasPaymentIntent || !hasBillWord) {
+    return null;
+  }
+
+  const amountMatch = text.match(/(\d+(?:[.,]\d+)?)/);
+  const amount = amountMatch
+    ? Number(amountMatch[1].replace(',', '.'))
+    : undefined;
+
+  let searchSource = text;
+
+  if (amountMatch) {
+    searchSource = searchSource.replace(amountMatch[0], '');
+  }
+
+  const searchText = normalizeArabicText(
+    searchSource
+      .replace(/جنيه|جنية|جنيها|جنيهًا|ج\.م/gi, '')
+      .replace(/دفعت|سددت|سداد|فاتورة|فاتوره|من/gi, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+  );
+
+  return {
+    searchText,
+    amount:
+      amount !== undefined && Number.isFinite(amount) && amount > 0
+        ? amount
+        : undefined,
+  };
+}
+
+// ============================================================
 // Create Recurring Obligation Parser
 // ============================================================
 
@@ -894,6 +1037,12 @@ ${formatMoney(context.safeToSpend || 0)} ج.م`;
 💳 سداد دين:
 دفعت 500 جنيه من دين CIB
 
+🧾 إضافة فاتورة:
+أضف فاتورة كهرباء 450 جنيه يوم 20
+
+🧾 سداد فاتورة:
+دفعت فاتورة الكهرباء
+
 📅 سداد التزام:
 دفعت 300 جنيه من التزام الإنترنت
 
@@ -919,6 +1068,12 @@ ${formatMoney(context.safeToSpend || 0)} ج.م`;
 
 💳 سداد دين:
 دفعت 500 جنيه من دين CIB
+
+🧾 إضافة فاتورة:
+أضف فاتورة كهرباء 450 جنيه يوم 20
+
+🧾 سداد فاتورة:
+دفعت فاتورة الكهرباء
 
 📅 سداد التزام:
 دفعت 300 جنيه من التزام الإنترنت
@@ -1177,6 +1332,22 @@ ${code}
         );
 
       // ========================================================
+      // DEBUG - Verify latest Telegram router deployment
+      // ========================================================
+
+      if (normalized === 'billtest') {
+        await sendTelegramMessage(
+          chatId,
+          '✅ BILL ROUTER V3 شغال'
+        );
+
+        return res.status(200).json({
+          success: true,
+          received: true,
+        });
+      }
+
+      // ========================================================
       // Confirm Pending Action
       // ========================================================
 
@@ -1246,6 +1417,194 @@ ${code}
               success: true,
               received: true,
             });
+        }
+
+        // ======================================================
+        // Confirm Create Bill
+        // ======================================================
+
+        if (
+          pending.actionType ===
+          'create_bill'
+        ) {
+          const title = String(pending.billTitle || '').trim();
+          const amount = Number(pending.amount || 0);
+          const dueDate = String(pending.dueDate || '').trim();
+
+          const parsedBill = billCreateSchema.safeParse({
+            title,
+            titleAr: title,
+            biller: pending.biller || title,
+            amount,
+            dueDate,
+            isPaid: false,
+            paymentMethod: 'Cash',
+            icon: 'ReceiptText',
+            urgency: pending.urgency || 'medium',
+            notes: 'تم إنشاء الفاتورة من Telegram',
+          });
+
+          if (!parsedBill.success) {
+            console.error(
+              'Telegram create bill validation failed:',
+              parsedBill.error.format()
+            );
+
+            await pendingRef.delete();
+
+            await sendTelegramMessage(
+              chatId,
+              'تعذر إنشاء الفاتورة لأن بياناتها غير صالحة.'
+            );
+
+            return res.status(200).json({
+              success: true,
+              received: true,
+            });
+          }
+
+          const existingBills = await billRepository.getBills(linkedUserId);
+          const duplicate = existingBills.find((bill: any) =>
+            !bill.isPaid &&
+            normalizeArabicText(String(bill.titleAr || bill.title || '')) ===
+              normalizeArabicText(title) &&
+            Number(bill.amount || 0) === amount &&
+            String(bill.dueDate || '') === dueDate
+          );
+
+          if (duplicate) {
+            await pendingRef.delete();
+
+            await sendTelegramMessage(
+              chatId,
+              `⚠️ الفاتورة دي موجودة بالفعل وغير مدفوعة:\n\n🧾 ${title}\n💰 ${formatMoney(amount)} ج.م\n📅 ${dueDate}\n\nلم يتم إنشاء فاتورة مكررة.`
+            );
+
+            return res.status(200).json({
+              success: true,
+              received: true,
+            });
+          }
+
+          const createdBill = await billRepository.saveBill(
+            linkedUserId,
+            parsedBill.data as any
+          );
+
+          await markBudgetStale(linkedUserId);
+          await pendingRef.delete();
+
+          await sendTelegramMessage(
+            chatId,
+            `✅ تم إنشاء الفاتورة بنجاح.\n\n🧾 الفاتورة:\n${createdBill.titleAr || createdBill.title}\n\n💰 المبلغ:\n${formatMoney(createdBill.amount)} ج.م\n\n📅 تاريخ الاستحقاق:\n${createdBill.dueDate}\n\n⚠️ لم يتم خصم أي مبلغ من المحفظة لأن الفاتورة لم تُدفع بعد.\n\nرقم الفاتورة:\n${createdBill.id}`
+          );
+
+          return res.status(200).json({
+            success: true,
+            received: true,
+          });
+        }
+
+        // ======================================================
+        // Confirm Bill Payment
+        // ======================================================
+
+        if (
+          pending.actionType ===
+          'bill_payment'
+        ) {
+          const billId = String(pending.billId || '');
+          const walletId = String(pending.walletId || '');
+
+          if (!billId || !walletId) {
+            await pendingRef.delete();
+
+            await sendTelegramMessage(
+              chatId,
+              'تعذر سداد الفاتورة لأن بيانات العملية غير صالحة.'
+            );
+
+            return res.status(200).json({
+              success: true,
+              received: true,
+            });
+          }
+
+          const bills = await billRepository.getBills(linkedUserId);
+          const bill = bills.find((item: any) => item.id === billId);
+
+          if (!bill) {
+            await pendingRef.delete();
+            await sendTelegramMessage(chatId, '⚠️ الفاتورة لم تعد موجودة.');
+            return res.status(200).json({ success: true, received: true });
+          }
+
+          if (bill.isPaid) {
+            await pendingRef.delete();
+            await sendTelegramMessage(chatId, '✅ الفاتورة مدفوعة بالفعل.');
+            return res.status(200).json({ success: true, received: true });
+          }
+
+          const amount = Number(bill.amount || 0);
+
+          if (!Number.isFinite(amount) || amount <= 0) {
+            await pendingRef.delete();
+            await sendTelegramMessage(chatId, '⚠️ مبلغ الفاتورة غير صالح.');
+            return res.status(200).json({ success: true, received: true });
+          }
+
+          const transactionPayload = {
+            title: `سداد فاتورة ${bill.titleAr || bill.title}`,
+            amount,
+            currency: pending.walletCurrency || 'EGP',
+            type: 'expense' as const,
+            category: 'Bills & Subscriptions' as const,
+            walletId,
+            paymentMethod: 'Cash' as const,
+            date: new Date().toISOString().split('T')[0],
+            merchant: bill.biller || undefined,
+            notes: `تم سداد الفاتورة من Telegram - Bill ID: ${bill.id}`,
+            aiTag: 'telegram-bill-payment',
+          };
+
+          const validation = transactionCreateSchema.safeParse(transactionPayload);
+
+          if (!validation.success) {
+            console.error(
+              'Telegram bill payment validation failed:',
+              validation.error.format()
+            );
+
+            await pendingRef.delete();
+            await sendTelegramMessage(chatId, 'تعذر تسجيل سداد الفاتورة.');
+            return res.status(200).json({ success: true, received: true });
+          }
+
+          const transaction = await transactionRepository.createTransaction(
+            linkedUserId,
+            validation.data
+          );
+
+          const paidBill = await billRepository.payBill(linkedUserId, billId);
+
+          if (!paidBill) {
+            // The transaction has already been created at this point. This should
+            // only happen if the bill disappeared between the live read and write.
+            console.error('Bill disappeared after transaction creation:', billId);
+          }
+
+          await markBudgetStale(linkedUserId);
+          await pendingRef.delete();
+
+          await sendTelegramMessage(
+            chatId,
+            `✅ تم سداد الفاتورة بنجاح.\n\n🧾 الفاتورة:\n${bill.titleAr || bill.title}\n\n💰 المبلغ:\n${formatMoney(amount)} ج.م\n\n👛 تم الخصم من:\n${pending.walletName || 'المحفظة'}\n\n✅ تم تعليم الفاتورة كمدفوعة\n📊 وتم تحديث الميزانية\n\nرقم المعاملة:\n${transaction.id}`
+          );
+
+          return res.status(200).json({
+            success: true,
+            received: true,
+          });
         }
 
         // ======================================================
@@ -2026,7 +2385,162 @@ ${transaction.id}`
 
       if (text) {
         // ======================================================
-        // 1. Create Recurring Obligation FIRST
+        // 1. Create Bill FIRST
+        // ======================================================
+
+        const createBillCandidate =
+          extractCreateBillCandidate(text);
+
+        if (createBillCandidate) {
+          const now = Date.now();
+
+          await db
+            .collection('telegram_pending_transactions')
+            .doc(String(telegramUserId))
+            .set({
+              userId: linkedUserId,
+              telegramUserId,
+              chatId,
+              actionType: 'create_bill',
+              billTitle: createBillCandidate.title,
+              biller: createBillCandidate.title,
+              amount: createBillCandidate.amount,
+              dueDate: createBillCandidate.dueDate,
+              urgency: 'medium',
+              used: false,
+              createdAt: now,
+              expiresAt:
+                now +
+                PENDING_TX_EXPIRY_MINUTES * 60 * 1000,
+            });
+
+          await sendTelegramMessage(
+            chatId,
+            `🧾 فاتورة جديدة جاهزة للإضافة:\n\n📌 الفاتورة:\n${createBillCandidate.title}\n\n💰 المبلغ:\n${formatMoney(createBillCandidate.amount)} ج.م\n\n📅 تاريخ الاستحقاق:\n${createBillCandidate.dueDate}\n\n⚠️ إنشاء الفاتورة لا يخصم أي مبلغ من المحفظة.\n\nهل تريد إنشاء الفاتورة؟\n\nاكتب:\nتأكيد\n\nأو:\nإلغاء`
+          );
+
+          return res.status(200).json({
+            success: true,
+            received: true,
+          });
+        }
+
+        // ======================================================
+        // 2. Bill Payment
+        // ======================================================
+
+        const billPaymentCandidate =
+          extractBillPaymentCandidate(text);
+
+        if (billPaymentCandidate) {
+          const bills = await billRepository.getBills(linkedUserId);
+          const unpaidBills = bills.filter((bill: any) => !bill.isPaid);
+
+          const matchingBills = unpaidBills.filter((bill: any) => {
+            const title = normalizeArabicText(
+              String(bill.titleAr || bill.title || '')
+            );
+            const biller = normalizeArabicText(String(bill.biller || ''));
+            const search = billPaymentCandidate.searchText;
+
+            if (!search) {
+              return unpaidBills.length === 1;
+            }
+
+            return (
+              title.includes(search) ||
+              search.includes(title) ||
+              biller.includes(search) ||
+              (biller && search.includes(biller))
+            );
+          });
+
+          // No matching stored bill: let normal expense handling continue.
+          if (matchingBills.length === 1) {
+            const selectedBill: any = matchingBills[0];
+            const billAmount = Number(selectedBill.amount || 0);
+
+            if (
+              billPaymentCandidate.amount !== undefined &&
+              Math.abs(billPaymentCandidate.amount - billAmount) > 0.01
+            ) {
+              await sendTelegramMessage(
+                chatId,
+                `⚠️ المبلغ اللي كتبته مختلف عن قيمة الفاتورة المسجلة.\n\n🧾 الفاتورة:\n${selectedBill.titleAr || selectedBill.title}\n\n💰 القيمة المسجلة:\n${formatMoney(billAmount)} ج.م\n\n💵 المبلغ المكتوب:\n${formatMoney(billPaymentCandidate.amount)} ج.م\n\nلو عايز تسدد الفاتورة المسجلة ابعت:\nدفعت فاتورة ${selectedBill.titleAr || selectedBill.title}`
+              );
+
+              return res.status(200).json({
+                success: true,
+                received: true,
+              });
+            }
+
+            const wallet = await getPrimaryWallet(linkedUserId);
+
+            if (!wallet) {
+              await sendTelegramMessage(
+                chatId,
+                '⚠️ مفيش محفظة متاحة في حسابك. أنشئ محفظة من Mizaniya AI الأول.'
+              );
+              return res.status(200).json({ success: true, received: true });
+            }
+
+            const now = Date.now();
+
+            await db
+              .collection('telegram_pending_transactions')
+              .doc(String(telegramUserId))
+              .set({
+                userId: linkedUserId,
+                telegramUserId,
+                chatId,
+                actionType: 'bill_payment',
+                billId: selectedBill.id,
+                billTitle: selectedBill.titleAr || selectedBill.title,
+                amount: billAmount,
+                walletId: wallet.id,
+                walletName: wallet.nameAr || wallet.name,
+                walletCurrency: wallet.currency || 'EGP',
+                used: false,
+                createdAt: now,
+                expiresAt:
+                  now +
+                  PENDING_TX_EXPIRY_MINUTES * 60 * 1000,
+              });
+
+            await sendTelegramMessage(
+              chatId,
+              `🧾 سداد فاتورة جاهز للتأكيد:\n\n📌 الفاتورة:\n${selectedBill.titleAr || selectedBill.title}\n\n💰 المبلغ:\n${formatMoney(billAmount)} ج.م\n\n📅 الاستحقاق:\n${selectedBill.dueDate || '-'}\n\n👛 المحفظة:\n${wallet.nameAr || wallet.name}\n\nبعد التأكيد سيتم:\n✅ تسجيل المصروف\n✅ خصم المبلغ من المحفظة\n✅ تعليم الفاتورة كمدفوعة\n✅ تحديث الميزانية\n\nاكتب:\nتأكيد\n\nأو:\nإلغاء`
+            );
+
+            return res.status(200).json({
+              success: true,
+              received: true,
+            });
+          }
+
+          if (matchingBills.length > 1) {
+            const list = matchingBills
+              .map(
+                (bill: any, index: number) =>
+                  `${index + 1}. ${bill.titleAr || bill.title} — ${formatMoney(Number(bill.amount || 0))} ج.م — ${bill.dueDate || '-'}`
+              )
+              .join('\n');
+
+            await sendTelegramMessage(
+              chatId,
+              `🧾 لقيت أكتر من فاتورة غير مدفوعة مطابقة:\n\n${list}\n\nاكتب اسم الفاتورة بشكل أوضح.`
+            );
+
+            return res.status(200).json({
+              success: true,
+              received: true,
+            });
+          }
+        }
+
+        // ======================================================
+        // 3. Create Recurring Obligation
         // ======================================================
 
         const createObligationCandidate =
