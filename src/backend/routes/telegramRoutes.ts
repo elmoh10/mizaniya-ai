@@ -14,6 +14,7 @@ import { getWalletsForUser } from '../services/walletService';
 import { transactionCreateSchema, billCreateSchema } from '../validators/schemas';
 import { recordDebtPayment } from '../services/debtService';
 import { createObligation } from '../services/obligationService';
+import { routeFinancialIntent } from '../services/financialIntentRouter';
 
 import { CategoryType } from '../../types';
 
@@ -2385,11 +2386,25 @@ ${transaction.id}`
 
       if (text) {
         // ======================================================
+        // Smart Financial Intent Router V1
+        // ======================================================
+
+        const smartIntent = routeFinancialIntent(text);
+        let billPaymentFallsBackToExpense = false;
+
+        console.log(
+          'Telegram financial intent:',
+          JSON.stringify(smartIntent)
+        );
+
+        // ======================================================
         // 1. Create Bill FIRST
         // ======================================================
 
         const createBillCandidate =
-          extractCreateBillCandidate(text);
+          smartIntent.intent === 'CREATE_BILL'
+            ? extractCreateBillCandidate(text)
+            : null;
 
         if (createBillCandidate) {
           const now = Date.now();
@@ -2430,7 +2445,9 @@ ${transaction.id}`
         // ======================================================
 
         const billPaymentCandidate =
-          extractBillPaymentCandidate(text);
+          smartIntent.intent === 'PAY_BILL'
+            ? extractBillPaymentCandidate(text)
+            : null;
 
         if (billPaymentCandidate) {
           const bills = await billRepository.getBills(linkedUserId);
@@ -2454,6 +2471,10 @@ ${transaction.id}`
               (biller && search.includes(biller))
             );
           });
+
+          // If the user said "دفعت فاتورة ..." but there is no stored Bill,
+          // preserve the old safe behavior and treat it as a normal expense.
+          billPaymentFallsBackToExpense = matchingBills.length === 0;
 
           // No matching stored bill: let normal expense handling continue.
           if (matchingBills.length === 1) {
@@ -2544,9 +2565,11 @@ ${transaction.id}`
         // ======================================================
 
         const createObligationCandidate =
-          extractCreateObligationCandidate(
-            text
-          );
+          smartIntent.intent === 'CREATE_OBLIGATION'
+            ? extractCreateObligationCandidate(
+                text
+              )
+            : null;
 
         if (createObligationCandidate) {
           const now = Date.now();
@@ -2647,9 +2670,11 @@ ${getArabicCategoryName(category)}
         // ======================================================
 
         const obligationPaymentCandidate =
-          extractObligationPaymentCandidate(
-            text
-          );
+          smartIntent.intent === 'PAY_OBLIGATION'
+            ? extractObligationPaymentCandidate(
+                text
+              )
+            : null;
 
         if (
           obligationPaymentCandidate
@@ -3021,9 +3046,11 @@ ${wallet.nameAr || wallet.name}
         // ======================================================
 
         const debtPaymentCandidate =
-          extractDebtPaymentCandidate(
-            text
-          );
+          smartIntent.intent === 'PAY_DEBT'
+            ? extractDebtPaymentCandidate(
+                text
+              )
+            : null;
 
         if (
           debtPaymentCandidate
@@ -3300,9 +3327,11 @@ ${formatMoney(
         // ======================================================
 
         const incomeCandidate =
-          extractIncomeCandidate(
-            text
-          );
+          smartIntent.intent === 'CREATE_INCOME'
+            ? extractIncomeCandidate(
+                text
+              )
+            : null;
 
         if (incomeCandidate) {
           const wallet =
@@ -3466,9 +3495,12 @@ ${wallet.nameAr || wallet.name}
         // ======================================================
 
         const expenseCandidate =
-          extractExpenseCandidate(
-            text
-          );
+          smartIntent.intent === 'CREATE_EXPENSE' ||
+          billPaymentFallsBackToExpense
+            ? extractExpenseCandidate(
+                text
+              )
+            : null;
 
         if (expenseCandidate) {
           const wallet =
