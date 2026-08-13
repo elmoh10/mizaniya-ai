@@ -25,3 +25,12 @@ export async function syncInstaPayBankAccounts(userId: string): Promise<{ status
     count: wallets.length,
   };
 }
+
+
+export async function updateWalletForUser(userId: string, walletId: string, payload: Partial<Wallet>): Promise<Wallet | null> {
+  return await walletRepository.updateWallet(userId, walletId, payload);
+}
+
+export async function archiveWalletForUser(userId: string, walletId: string): Promise<boolean> {
+  return await walletRepository.archiveWallet(userId, walletId);
+}

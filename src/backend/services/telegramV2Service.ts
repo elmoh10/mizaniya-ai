@@ -7,7 +7,13 @@ import {
   restoreTransactionAtomic,
   softDeleteTransactionAtomic,
 } from './transactionLifecycleService';
-import { CategoryType } from '../../types';
+import { CategoryType, Currency, Wallet } from '../../types';
+import {
+  archiveWalletForUser,
+  createWalletForUser,
+  getWalletsForUser,
+  updateWalletForUser,
+} from './walletService';
 
 const PENDING_MINUTES = 10;
 
@@ -146,6 +152,79 @@ function parseTransfer(text: string): { amount: number; source: string; destinat
   if (!match) return null;
 
   return { amount, source: match[1].trim(), destination: match[2].trim() };
+}
+
+
+function detectWalletType(name: string): Wallet['type'] {
+  const n = normalizeArabicText(name);
+  if (/فودافون|اورنج|اتصالات|وي باي|wallet|محفظه/.test(n)) return 'wallet';
+  if (/cib|بنك|اهلي|مصر|qnb|alex|hsbc|bank/.test(n)) return 'bank';
+  if (/فيزا|ماستر|كارت|بطاقه|card/.test(n)) return 'card';
+  if (/ادخار|توفير|تحويش|savings/.test(n)) return 'savings';
+  if (/كاش|نقد|cash/.test(n)) return 'cash';
+  return 'wallet';
+}
+
+function detectCurrency(text: string): Currency {
+  const n = normalizeArabicText(text);
+  if (/دولار|usd/.test(n)) return 'USD';
+  if (/ريال|sar/.test(n)) return 'SAR';
+  if (/يورو|eur/.test(n)) return 'EUR';
+  return 'EGP';
+}
+
+function parseWalletCreate(text: string): {
+  name: string;
+  balance: number;
+  currency: Currency;
+  type: Wallet['type'];
+} | null {
+  const normalized = normalizeArabicText(text);
+  if (!/(اعمل|انشئ|اضف|افتح).*(محفظه|حساب)/.test(normalized)) return null;
+
+  let name = '';
+  const raw = String(text || '').trim();
+  const nameMatch = raw.match(/(?:اسمها|باسم)\s+(.+?)(?=\s+(?:ورصيدها|رصيدها|برصيد|رصيد)\b|$)/i);
+  if (nameMatch) name = nameMatch[1].trim();
+
+  if (!name) {
+    const fallback = raw.match(/(?:محفظة|محفظه|حساب)\s+(?:جديدة|جديد)?\s*(?:اسمها|باسم)?\s*(.+?)(?=\s+(?:ورصيدها|رصيدها|برصيد|رصيد)\b|$)/i);
+    if (fallback) name = fallback[1].trim();
+  }
+
+  name = name.replace(/^(جديده|جديدة|جديد)\s+/i, '').trim();
+  if (!name || /^جديد[هة]?$/.test(name)) return null;
+
+  const amount = parseAmount(text) ?? 0;
+  const currency = detectCurrency(text);
+  return { name, balance: amount, currency, type: detectWalletType(name) };
+}
+
+function parseWalletRename(text: string): { oldName: string; newName: string } | null {
+  const raw = String(text || '').trim();
+  const n = normalizeArabicText(raw);
+  if (!/(غير|عدل|بدل).*(اسم).*(محفظه|حساب)/.test(n)) return null;
+  const m = raw.match(/(?:محفظة|محفظه|حساب)\s+(.+?)\s+(?:إلى|الى|لـ|ل)\s+(.+)$/i);
+  if (!m) return null;
+  return { oldName: m[1].trim(), newName: m[2].trim() };
+}
+
+function parseWalletDelete(text: string): string | null {
+  const raw = String(text || '').trim();
+  const n = normalizeArabicText(raw);
+  if (!/^(احذف|امسح|الغي|الغى).*(محفظه|حساب)/.test(n)) return null;
+  const m = raw.match(/(?:محفظة|محفظه|حساب)\s+(.+)$/i);
+  return m?.[1]?.trim() || null;
+}
+
+function walletLabel(wallet: any): string {
+  return `${wallet.nameAr || wallet.name || wallet.id} — ${formatMoney(Number(wallet.balance || 0))} ${wallet.currency || 'EGP'}${wallet.isPrimary ? ' — الأساسية' : ''}`;
+}
+
+async function resolveSingleWallet(userId: string, hint: string) {
+  const match = await matchWalletByHint(userId, hint);
+  if (match.ambiguous || !match.wallet) return null;
+  return match.wallet;
 }
 
 function categoryFromText(text: string): CategoryType | null {
@@ -361,6 +440,87 @@ async function handleV2Pending(input: HandlerInput): Promise<HandlerResult> {
         chatId,
         `✅ تم التحويل بنجاح.\n\n💰 ${formatMoney(tx.amount)} ج.م\n👛 من: ${pending.sourceWalletName}\n👛 إلى: ${pending.destinationWalletName}\n🧾 رقم العملية: ${tx.id}`
       );
+      return { handled: true };
+    }
+
+
+    if (pending.actionType === 'v2_create_wallet') {
+      const existing = await getWalletsForUser(userId);
+      const wanted = normalizeArabicText(String(pending.name || ''));
+      const duplicate = existing.find((wallet) =>
+        [wallet.name, wallet.nameAr]
+          .filter(Boolean)
+          .some((value) => normalizeArabicText(String(value)) === wanted)
+      );
+      if (duplicate) {
+        await ref.delete();
+        await sendMessage(chatId, `⚠️ عندك محفظة بنفس الاسم بالفعل:\n${walletLabel(duplicate)}`);
+        return { handled: true };
+      }
+
+      const wallet = await createWalletForUser(userId, {
+        name: String(pending.name),
+        nameAr: String(pending.name),
+        type: pending.walletType || 'wallet',
+        balance: Number(pending.balance || 0),
+        currency: pending.currency || 'EGP',
+        icon: 'Wallet',
+        color: 'bg-emerald-600',
+        isPrimary: existing.length === 0,
+      } as any);
+      await ref.delete();
+      await sendMessage(
+        chatId,
+        `✅ تم إنشاء المحفظة بنجاح.\n\n👛 ${wallet.nameAr || wallet.name}\n💰 الرصيد الافتتاحي: ${formatMoney(Number(wallet.balance || 0))} ${wallet.currency}\n🏷️ النوع: ${wallet.type}${wallet.isPrimary ? '\n⭐ تم تعيينها كمحفظة أساسية' : ''}\n\nℹ️ الرصيد الافتتاحي لا يُحسب كمصروف أو دخل.`
+      );
+      return { handled: true };
+    }
+
+    if (pending.actionType === 'v2_rename_wallet') {
+      const updated = await updateWalletForUser(userId, String(pending.walletId), {
+        name: String(pending.newName),
+        nameAr: String(pending.newName),
+      });
+      await ref.delete();
+      if (!updated) {
+        await sendMessage(chatId, '⚠️ المحفظة لم تعد موجودة.');
+        return { handled: true };
+      }
+      await sendMessage(chatId, `✅ تم تغيير اسم المحفظة بنجاح.\n\n👛 الاسم الجديد: ${updated.nameAr || updated.name}`);
+      return { handled: true };
+    }
+
+    if (pending.actionType === 'v2_delete_wallet') {
+      const walletId = String(pending.walletId || '');
+      const wallet = (await getWalletsForUser(userId)).find((w) => w.id === walletId);
+      if (!wallet) {
+        await ref.delete();
+        await sendMessage(chatId, '⚠️ المحفظة لم تعد موجودة.');
+        return { handled: true };
+      }
+      if (wallet.isPrimary) {
+        await ref.delete();
+        await sendMessage(chatId, '⚠️ لا يمكن حذف المحفظة الأساسية. غيّر المحفظة الأساسية من التطبيق أولًا.');
+        return { handled: true };
+      }
+      if (Math.abs(Number(wallet.balance || 0)) > 0.000001) {
+        await ref.delete();
+        await sendMessage(chatId, `⚠️ لا يمكن حذف المحفظة لأن رصيدها ${formatMoney(Number(wallet.balance || 0))} ${wallet.currency}. صفّر الرصيد أو حوّله لمحفظة أخرى أولًا.`);
+        return { handled: true };
+      }
+      const txCol = db.collection('users').doc(userId).collection('transactions');
+      const [asSource, asDest] = await Promise.all([
+        txCol.where('walletId', '==', walletId).limit(1).get(),
+        txCol.where('destinationWalletId', '==', walletId).limit(1).get(),
+      ]);
+      if (!asSource.empty || !asDest.empty) {
+        await ref.delete();
+        await sendMessage(chatId, '⚠️ لا يمكن حذف المحفظة لأن لها سجل عمليات. للحفاظ على التاريخ المالي خليها موجودة أو أضف ميزة الأرشفة لاحقًا.');
+        return { handled: true };
+      }
+      await archiveWalletForUser(userId, walletId);
+      await ref.delete();
+      await sendMessage(chatId, `✅ تم حذف المحفظة ${wallet.nameAr || wallet.name} بنجاح.`);
       return { handled: true };
     }
 
@@ -592,6 +752,93 @@ export async function handleTelegramFinancialAssistantV2(input: HandlerInput): P
     const tx = deleted[0];
     await savePending(telegramUserId, { actionType: 'v2_restore_tx', userId, chatId, txId: tx.id, title: tx.title, amount: tx.amount });
     await sendMessage(chatId, `♻️ استرجاع عملية جاهز:\n\n${transactionLabel(tx)}\n\nسيتم إعادة تأثيرها على المحفظة.\n\nاكتب: تأكيد\nأو: إلغاء`);
+    return { handled: true };
+  }
+
+
+  if (/^(اعرض|وريني|هات|اظهر).*محافظ|محافظي|رصيد المحافظ|ارصده المحافظ/.test(n)) {
+    const wallets = await getWalletsForUser(userId);
+    if (!wallets.length) {
+      await sendMessage(chatId, '👛 مفيش محافظ مسجلة حاليًا.');
+      return { handled: true };
+    }
+    const totalEgp = wallets
+      .filter((w) => w.currency === 'EGP')
+      .reduce((sum, w) => sum + Number(w.balance || 0), 0);
+    await sendMessage(
+      chatId,
+      `👛 محافظك:\n\n${wallets.map((w, i) => `${i + 1}. ${walletLabel(w)}`).join('\n')}\n\n💰 إجمالي محافظ EGP: ${formatMoney(totalEgp)} ج.م`
+    );
+    return { handled: true };
+  }
+
+  const walletCreate = parseWalletCreate(text);
+  if (walletCreate) {
+    const wallets = await getWalletsForUser(userId);
+    const duplicate = wallets.find((wallet) =>
+      [wallet.name, wallet.nameAr]
+        .filter(Boolean)
+        .some((value) => normalizeArabicText(String(value)) === normalizeArabicText(walletCreate.name))
+    );
+    if (duplicate) {
+      await sendMessage(chatId, `⚠️ عندك محفظة بنفس الاسم بالفعل:\n${walletLabel(duplicate)}`);
+      return { handled: true };
+    }
+    await savePending(telegramUserId, {
+      actionType: 'v2_create_wallet',
+      userId,
+      chatId,
+      name: walletCreate.name,
+      balance: walletCreate.balance,
+      currency: walletCreate.currency,
+      walletType: walletCreate.type,
+    });
+    await sendMessage(
+      chatId,
+      `👛 إنشاء محفظة جاهز للتأكيد:\n\n📝 الاسم: ${walletCreate.name}\n🏷️ النوع: ${walletCreate.type}\n💰 الرصيد الافتتاحي: ${formatMoney(walletCreate.balance)} ${walletCreate.currency}\n\nℹ️ الرصيد الافتتاحي لن يُحسب كدخل أو مصروف.\n\nاكتب: تأكيد\nأو: إلغاء`
+    );
+    return { handled: true };
+  }
+
+  const walletRename = parseWalletRename(text);
+  if (walletRename) {
+    const wallet = await resolveSingleWallet(userId, walletRename.oldName);
+    if (!wallet) {
+      await sendMessage(chatId, '👛 مش قادر أحدد المحفظة المراد تغيير اسمها. اكتب اسمها الحالي كما هو مسجل.');
+      return { handled: true };
+    }
+    if (!walletRename.newName.trim()) {
+      await sendMessage(chatId, '⚠️ الاسم الجديد غير صالح.');
+      return { handled: true };
+    }
+    await savePending(telegramUserId, {
+      actionType: 'v2_rename_wallet', userId, chatId,
+      walletId: wallet.id, oldName: wallet.nameAr || wallet.name, newName: walletRename.newName,
+    });
+    await sendMessage(chatId, `✏️ تغيير اسم المحفظة جاهز:\n\nمن: ${wallet.nameAr || wallet.name}\nإلى: ${walletRename.newName}\n\nاكتب: تأكيد\nأو: إلغاء`);
+    return { handled: true };
+  }
+
+  const walletDeleteHint = parseWalletDelete(text);
+  if (walletDeleteHint) {
+    const wallet = await resolveSingleWallet(userId, walletDeleteHint);
+    if (!wallet) {
+      await sendMessage(chatId, '👛 مش قادر أحدد المحفظة المراد حذفها.');
+      return { handled: true };
+    }
+    if (wallet.isPrimary) {
+      await sendMessage(chatId, '⚠️ لا يمكن حذف المحفظة الأساسية.');
+      return { handled: true };
+    }
+    if (Math.abs(Number(wallet.balance || 0)) > 0.000001) {
+      await sendMessage(chatId, `⚠️ المحفظة رصيدها ${formatMoney(Number(wallet.balance || 0))} ${wallet.currency}. لازم تصفّر الرصيد أو تحوله الأول.`);
+      return { handled: true };
+    }
+    await savePending(telegramUserId, {
+      actionType: 'v2_delete_wallet', userId, chatId, walletId: wallet.id,
+      walletName: wallet.nameAr || wallet.name,
+    });
+    await sendMessage(chatId, `🗑️ حذف محفظة جاهز للتأكيد:\n\n👛 ${wallet.nameAr || wallet.name}\n\nلن يتم الحذف إذا كان لها سجل عمليات.\n\nاكتب: تأكيد\nأو: إلغاء`);
     return { handled: true };
   }
 
