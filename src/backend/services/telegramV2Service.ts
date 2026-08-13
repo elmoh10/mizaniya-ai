@@ -244,6 +244,21 @@ function parseTransfer(text: string): { amount: number; source: string; destinat
 }
 
 
+function parseGoalAmount(text: string): number | undefined {
+  const raw = String(text || '');
+  // For goals, the financial amount is the number attached to a money expression,
+  // NOT the target year (e.g. 30000 جنيه قبل ديسمبر 2027).
+  const money = raw.match(/(\d+(?:[.,]\d+)?)\s*(?:جنيه|جنية|ج\.م|egp)/i);
+  if (money) {
+    const value = Number(money[1].replace(',', '.'));
+    if (Number.isFinite(value) && value > 0) return value;
+  }
+  const numbers = (raw.match(/\d+(?:[.,]\d+)?/g) || [])
+    .map(v => Number(v.replace(',', '.')))
+    .filter(v => Number.isFinite(v) && v > 0 && !(v >= 2000 && v <= 2100));
+  return numbers[0];
+}
+
 function parseGoalDate(text: string): string {
   const raw = String(text || '');
   const iso = raw.match(/\b(20\d{2})[-\/]([01]?\d)[-\/]([0-3]?\d)\b/);
@@ -275,24 +290,38 @@ async function findGoalCandidates(userId: string, hint: string, includeArchived 
   const goals: any[] = await goalRepository.getGoals(userId, includeArchived);
   const n = normalizeArabicText(hint);
   if (/اخر هدف/.test(n)) return goals.slice(-1).reverse().slice(0, 1);
-  const noise = ['هدف','الهدف','عايز','اريد','اعمل','انشئ','اضف','زود','حط','حوش','وفر','اسحب','من','في','على','الي','اكتب','عدل','غير','احذف','امسح','رجع','استرجع','جنيه'];
-  let clean = n.replace(/\d+(?:[.,]\d+)?/g, ' ');
+
+  // First use the stored goal title itself. This makes phrases such as
+  // "حط 500 جنيه في هدف العربية من الكاش" resolve "العربية" exactly.
+  const exact = goals.filter((goal:any) => {
+    const title = normalizeArabicText(String(goal.titleAr || goal.title || '')).trim();
+    return title.length > 1 && (n.includes(title) || title.includes(n));
+  });
+  if (exact.length) return exact.slice(0, 5);
+
+  let clean = n
+    .replace(/\d+(?:[.,]\d+)?/g, ' ')
+    .replace(/\b20\d{2}\b/g, ' ')
+    .replace(/(?:جنيه|جنيهات|جنية|ج\.م|egp)/g, ' ')
+    .replace(/(?:من|الى|الي|للكاش|للكاش|الكاش|كاش|فودافون|انستا ?باي|instapay|cib|محفظه|محفظة)/g, ' ');
+  const noise = ['هدف','الهدف','عايز','اريد','اعمل','انشئ','اضف','زود','حط','حطيت','ضيف','ادخر','حوش','وفرت','وفر','اسحب','خد','ارجع','في','على','اكتب','عدل','غير','خليه','احذف','امسح','رجع','استرجع'];
   for (const word of noise) clean = clean.split(normalizeArabicText(word)).join(' ');
-  clean = clean.replace(/\b20\d{2}\b/g, ' ').replace(/\s+/g, ' ').trim();
+  clean = clean.replace(/\s+/g, ' ').trim();
   if (!clean) return goals.slice(0, 5);
+
+  const words = clean.split(' ').filter(w => w.length > 1);
   return goals.map((goal:any) => {
     const title = normalizeArabicText(`${goal.titleAr || ''} ${goal.title || ''}`);
-    const words = clean.split(' ').filter(w => w.length > 1);
-    const hits = words.filter(w => title.includes(w) || w.includes(title)).length;
+    const hits = words.filter(w => title.includes(w) || (title.length > 1 && w.includes(title.trim()))).length;
     return { goal, score: hits / Math.max(1, words.length) };
-  }).filter(x => x.score >= 0.34).sort((a,b)=>b.score-a.score).map(x=>x.goal).slice(0,5);
+  }).filter(x => x.score >= 0.5).sort((a,b)=>b.score-a.score).map(x=>x.goal).slice(0,5);
 }
 
 function parseGoalCreate(text: string): { title: string; targetAmount: number; targetDate: string } | null {
   const n = normalizeArabicText(text);
   if (!/(هدف|اوفر|احوش|توفير|ادخار)/.test(n) || /(الشهر|شهري)/.test(n)) return null;
   if (!/(اعمل|انشئ|اضف|عايز|اريد|نفسي)/.test(n)) return null;
-  const amount = parseAmount(text); if (!amount) return null;
+  const amount = parseGoalAmount(text); if (!amount) return null;
   let title = String(text).replace(/\d+(?:[.,]\d+)?/g,' ').replace(/\b20\d{2}\b/g,' ')
     .replace(/(?:عايز|أريد|اريد|نفسي|اعمل|أنشئ|انشئ|اضف|هدف|اوفر|أوفر|احوش|جنيه|جنية|قبل|بحلول|لحد|لسنة|سنة)/gi,' ')
     .replace(/\s+/g,' ').trim();
@@ -1307,7 +1336,7 @@ export async function handleTelegramFinancialAssistantV2(input: HandlerInput): P
 
   if (/^(عدل|غير).*(هدف)/.test(n)) {
     const goals = await findGoalCandidates(userId, text); if (goals.length !== 1) { await sendMessage(chatId, '🎯 اكتب اسم الهدف بوضوح علشان أعدله.'); return { handled:true }; }
-    const amount = parseAmount(text) || Number(goals[0].targetAmount); const date = /20\d{2}|يناير|فبراير|مارس|ابريل|مايو|يونيو|يوليو|اغسطس|سبتمبر|اكتوبر|نوفمبر|ديسمبر/.test(n) ? parseGoalDate(text) : goals[0].targetDate;
+    const amount = parseGoalAmount(text) || Number(goals[0].targetAmount); const date = /20\d{2}|يناير|فبراير|مارس|ابريل|مايو|يونيو|يوليو|اغسطس|سبتمبر|اكتوبر|نوفمبر|ديسمبر/.test(n) ? parseGoalDate(text) : goals[0].targetDate;
     await savePending(telegramUserId, { actionType:'v2_edit_goal', userId, chatId, goalId:goals[0].id, targetAmount:amount, targetDate:date });
     await sendMessage(chatId, `✏️ تعديل هدف جاهز:\n\n🎯 ${goals[0].titleAr || goals[0].title}\n💰 الهدف الجديد: ${formatMoney(amount)} ج.م\n📅 الموعد: ${date}\n\nاكتب: تأكيد\nأو: إلغاء`); return { handled:true };
   }
