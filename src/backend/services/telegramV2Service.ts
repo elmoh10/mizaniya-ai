@@ -2,6 +2,7 @@ import { db } from '../config/firebaseAdmin';
 import { transactionRepository } from '../repositories/transactionRepository';
 import { matchWalletForUser } from './financialWalletMatcher';
 import { getTrustedFinancialContext } from './financialContextService';
+import { buildSmartFinancialInsights } from './smartFinancialInsightsService';
 import { executeBillPayment } from './financialExecutionService';
 import { billRepository, goalRepository } from '../repositories/budgetAndGoalRepositories';
 import {
@@ -898,6 +899,40 @@ async function handleV2Pending(input: HandlerInput): Promise<HandlerResult> {
 async function handleReadQueries(input: HandlerInput): Promise<HandlerResult> {
   const { userId, chatId, text, sendMessage } = input;
   const n = normalizeArabicText(text);
+
+  if (/صحتي الماليه|الصحه الماليه|financial health|درجتي الماليه|تقييمي المالي/.test(n)) {
+    const insights = await buildSmartFinancialInsights(userId);
+    const context:any = await getTrustedFinancialContext(userId);
+    const score = Number((context as any).financialHealthScore || 0);
+    await sendMessage(chatId, `🩺 ملخص صحتك المالية:
+
+💰 صافي التدفق هذا الشهر: ${formatMoney(insights.netCashFlow)} ج.م
+👛 رصيد المحافظ: ${formatMoney(insights.walletBalance)} ج.م
+✅ المتاح الآمن: ${formatMoney(insights.safeToSpend)} ج.م
+📉 متوسط الصرف اليومي: ${formatMoney(insights.dailyBurn)} ج.م
+🔮 توقع نهاية الشهر: ${formatMoney(insights.projectedMonthEndBalance)} ج.م
+🎯 تقدم الأهداف: ${insights.goalsProgressPercent}%
+⚠️ مستوى المخاطر: ${insights.risk === 'HIGH' ? 'مرتفع' : insights.risk === 'MEDIUM' ? 'متوسط' : 'منخفض'}${score ? `
+📊 مؤشر محفوظ: ${score}/100` : ''}`);
+    return { handled: true };
+  }
+
+  if (/حلل وضعي|حلل مصاريفي|تحليل مالي|اديني نصيحه|اديني نصيحة|نصيحه ماليه|نصيحة مالية|ايه اللي محتاج اعمله/.test(n)) {
+    const x = await buildSmartFinancialInsights(userId);
+    const actions:string[]=[];
+    if (x.projectedMonthEndBalance < 0) actions.push(`قلل الصرف المرن بحوالي ${formatMoney(Math.abs(x.projectedMonthEndBalance))} ج.م لتفادي العجز المتوقع.`);
+    if (x.dailyBurn > x.safeDaily && x.safeDaily > 0) actions.push(`استهدف سقف يومي قريب من ${formatMoney(x.safeDaily)} ج.م بدل متوسطك الحالي ${formatMoney(x.dailyBurn)} ج.م.`);
+    if (x.topCategory) actions.push(`راجع فئة ${x.topCategory.category} لأنها الأعلى هذا الشهر (${formatMoney(x.topCategory.amount)} ج.م).`);
+    if (!actions.length) actions.push('معدل الصرف الحالي متوافق مع السيولة المتاحة؛ حافظ على نفس الانضباط ووجّه أي فائض للأهداف.');
+    await sendMessage(chatId, `🤖 تحليل Mizaniya AI:
+
+${actions.map((a,i)=>`${i+1}. ${a}`).join('\n')}
+
+🔮 الرصيد المتوقع آخر الشهر: ${formatMoney(x.projectedMonthEndBalance)} ج.م
+💡 مستوى المخاطر: ${x.risk === 'HIGH' ? 'مرتفع' : x.risk === 'MEDIUM' ? 'متوسط' : 'منخفض'}`);
+    return { handled: true };
+  }
+
   const today = cairoDate();
   const monthKey = currentMonthKey();
 

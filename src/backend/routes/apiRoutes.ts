@@ -35,6 +35,7 @@ import { installmentRepository } from '../repositories/installmentRepository';
 import { profileRepository } from '../repositories/profileRepository';
 
 import { getTrustedFinancialContext } from '../services/financialContextService';
+import { buildSmartFinancialInsights } from '../services/smartFinancialInsightsService';
 
 import {
   executeBillPayment,
@@ -899,6 +900,18 @@ router.get(
     }
   }
 );
+
+// ============================================================
+// Smart Financial Insights / Predictive Engine
+// ============================================================
+router.get('/smart-insights', async (req: AuthenticatedRequest, res) => {
+  try {
+    const data = await buildSmartFinancialInsights(req.user!.uid);
+    return res.json({ success: true, data });
+  } catch (err: any) {
+    return res.status(500).json({ error: 'Failed to build smart financial insights', details: err.message });
+  }
+});
 
 // ============================================================
 // Wallet Routes
