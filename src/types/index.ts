@@ -43,6 +43,7 @@ export interface Transaction {
   type: 'expense' | 'income' | 'transfer';
   category: CategoryType;
   walletId: string;
+  destinationWalletId?: string;
   paymentMethod: PaymentMethod;
   date: string;
   merchant?: string;
@@ -55,6 +56,11 @@ export interface Transaction {
   relatedBillId?: string;
   relatedObligationId?: string;
   relatedInstallmentId?: string;
+  isDeleted?: boolean;
+  createdAt?: string;
+  updatedAt?: string;
+  deletedAt?: string;
+  restoredAt?: string;
 }
 
 export interface CategoryBudget {

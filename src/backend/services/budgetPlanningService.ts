@@ -411,6 +411,9 @@ export async function buildDeterministicBudgetPlan(
   }
 
   categories.forEach(cat => {
+    if (cat.allocatedAmount <= 0) {
+      return;
+    }
     if (cat.spentAmount > cat.allocatedAmount) {
       warnings.push(`لقد تجاوزت الميزانية المخصصة لفئة ${cat.categoryAr}!`);
     } else if (cat.spentAmount >= cat.allocatedAmount * 0.90) {
@@ -500,6 +503,9 @@ export async function enhanceBudgetPlanWithAI(plan: SmartBudgetPlan, customClien
       }
 
       updatedCategories.forEach(cat => {
+        if (cat.allocatedAmount <= 0) {
+          return;
+        }
         if (cat.spentAmount > cat.allocatedAmount) {
           warnings.push(`لقد تجاوزت الميزانية المخصصة لفئة ${cat.categoryAr}!`);
         } else if (cat.spentAmount >= cat.allocatedAmount * 0.90) {

@@ -21,6 +21,7 @@ import { createObligation } from '../services/obligationService';
 import { executeBillPayment, executeDebtPayment } from '../services/financialExecutionService';
 import { routeFinancialIntent } from '../services/financialIntentRouter';
 import { matchFinancialContext } from '../services/financialContextMatcher';
+import { handleTelegramFinancialAssistantV2 } from '../services/telegramV2Service';
 
 import {
   tryInterpretFinancialMessageWithGemini,
@@ -1970,6 +1971,28 @@ ${wallet.nameAr || wallet.name}
     });
   }
 }
+
+      // ========================================================
+      // Telegram Financial Assistant V2
+      // Edit / delete / restore / transfer / summaries / budget / forecast
+      // Runs before legacy confirmation and Gemini routing.
+      // ========================================================
+
+      const v2Result = await handleTelegramFinancialAssistantV2({
+        userId: linkedUserId,
+        telegramUserId,
+        chatId,
+        text: text || '',
+        sendMessage: sendTelegramMessage,
+        markBudgetStale,
+      });
+
+      if (v2Result.handled) {
+        return res.status(200).json({
+          success: true,
+          received: true,
+        });
+      }
 
       // ========================================================
       // Confirm Pending Action
