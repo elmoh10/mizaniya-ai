@@ -15,6 +15,8 @@ import {
 
 import { rateLimiter } from '../middlewares/rateLimiter';
 import { idempotencyMiddleware } from '../middlewares/idempotencyMiddleware';
+import { optionalAppCheckMiddleware } from '../middlewares/appCheckMiddleware';
+import { getNotifications, markNotificationRead, markAllNotificationsRead } from '../services/notificationService';
 
 import {
   getWalletsForUser,
@@ -147,6 +149,9 @@ router.use(
     60000
   )
 );
+
+// Optional Firebase App Check enforcement. Enable with ENFORCE_APP_CHECK=true after the web client is configured.
+router.use(optionalAppCheckMiddleware as any);
 
 // ============================================================
 // Profile & Onboarding Routes
@@ -2142,25 +2147,66 @@ router.post(
 );
 
 // ============================================================
+// Persisted Smart Notifications
+// ============================================================
+router.get('/notifications', async (req: AuthenticatedRequest, res) => {
+  try {
+    const data = await getNotifications(req.user!.uid);
+    return res.json({ success: true, ...data });
+  } catch (err: any) {
+    return res.status(500).json({ error: 'Failed to load notifications', details: err.message });
+  }
+});
+
+router.patch('/notifications/:id/read', async (req: AuthenticatedRequest, res) => {
+  try {
+    await markNotificationRead(req.user!.uid, String(req.params.id));
+    return res.json({ success: true });
+  } catch (err: any) {
+    return res.status(err.message === 'NOTIFICATION_NOT_FOUND' ? 404 : 500).json({ error: err.message });
+  }
+});
+
+router.post('/notifications/read-all', async (req: AuthenticatedRequest, res) => {
+  try {
+    await markAllNotificationsRead(req.user!.uid);
+    return res.json({ success: true });
+  } catch (err: any) {
+    return res.status(500).json({ error: 'Failed to mark notifications', details: err.message });
+  }
+});
+
+// ============================================================
 // Admin Metrics
 // ============================================================
 
 router.get(
   '/admin/metrics',
   requireAdmin as any,
-  (
-    _req,
-    res
-  ) => {
-    return res.json({
-      success: false,
-
-      error:
-        'Data unavailable',
-
-      message:
-        'Real-time admin telemetry pipeline is currently unconfigured in this environment.',
-    });
+  async (_req, res) => {
+    try {
+      const [usersAgg, txAgg, walletsAgg, billsAgg] = await Promise.all([
+        db.collection('users').count().get(),
+        db.collectionGroup('transactions').count().get(),
+        db.collectionGroup('wallets').count().get(),
+        db.collectionGroup('bills').count().get(),
+      ]);
+      return res.json({
+        success: true,
+        metrics: {
+          users: usersAgg.data().count,
+          transactions: txAgg.data().count,
+          wallets: walletsAgg.data().count,
+          bills: billsAgg.data().count,
+          system: 'Operational',
+          environment: process.env.NODE_ENV || 'development',
+          uptimeSeconds: Math.round(process.uptime()),
+          generatedAt: new Date().toISOString(),
+        },
+      });
+    } catch (err: any) {
+      return res.status(500).json({ error: 'Failed to load admin metrics', details: err.message });
+    }
   }
 );
 

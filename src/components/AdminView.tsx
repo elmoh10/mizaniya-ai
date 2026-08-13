@@ -117,16 +117,16 @@ export const AdminView: React.FC<AdminViewProps> = ({ onClose, lang }) => {
         ) : stats ? (
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 text-xs">
             <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700/60">
-              <span className="text-slate-400 block">{isAr ? 'إجمالي الطلبات' : 'Total Requests'}</span>
+              <span className="text-slate-400 block">{isAr ? 'إجمالي المستخدمين' : 'Total Users'}</span>
               <span className="text-base font-bold text-slate-900 dark:text-white mt-0.5 block">
-                {stats.totalRequests ?? 0}
+                {stats.users ?? 0}
               </span>
             </div>
 
             <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700/60">
-              <span className="text-slate-400 block">{isAr ? 'استدعاءات AI' : 'AI Calls'}</span>
+              <span className="text-slate-400 block">{isAr ? 'إجمالي المعاملات' : 'Transactions'}</span>
               <span className="text-base font-bold text-emerald-600 dark:text-emerald-400 mt-0.5 block">
-                {stats.geminiCalls ?? 0}
+                {stats.transactions ?? 0}
               </span>
             </div>
 

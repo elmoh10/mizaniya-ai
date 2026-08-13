@@ -23,6 +23,7 @@ interface HeaderProps {
   onOpenAdmin: () => void;
   onOpenVoice: () => void;
   unreadAlertsCount: number;
+  onOpenNotifications?: () => void;
   isAdmin?: boolean;
   userEmail?: string;
   userName?: string;
@@ -40,6 +41,7 @@ export const Header: React.FC<HeaderProps> = ({
   onOpenAdmin,
   onOpenVoice,
   unreadAlertsCount,
+  onOpenNotifications,
   isAdmin = false,
   userEmail,
   userName,
@@ -146,6 +148,7 @@ export const Header: React.FC<HeaderProps> = ({
           {/* Notifications */}
           <div className="relative">
             <button
+              onClick={onOpenNotifications}
               className="p-2 rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 transition"
               title={isAr ? 'التنبيهات والإشعارات' : 'Notifications'}
             >

@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { Header } from './components/Header';
+import { NotificationsPanel, AppNotification } from './components/NotificationsPanel';
 import { Navigation, NavTab } from './components/Navigation';
 import { DashboardView } from './components/DashboardView';
 import { TransactionsView } from './components/TransactionsView';
@@ -60,6 +61,9 @@ export function App() {
 
   // Modals
   const [showAdminModal, setShowAdminModal] = useState(false);
+  const [showNotifications, setShowNotifications] = useState(false);
+  const [notifications, setNotifications] = useState<AppNotification[]>([]);
+  const [unreadNotifications, setUnreadNotifications] = useState(0);
 
   // Handle HTML document direction and Dark Mode class
   useEffect(() => {
@@ -102,7 +106,7 @@ export function App() {
     setDataError(null);
 
     try {
-      const [walletsRes, txsRes, budgetRes, goalsRes, billsRes, subscriptionsRes, healthRes, insightsRes] = await Promise.all([
+      const [walletsRes, txsRes, budgetRes, goalsRes, billsRes, subscriptionsRes, healthRes, insightsRes, notificationsRes] = await Promise.all([
         apiClient.get('/wallets'),
         apiClient.get('/transactions'),
         apiClient.get('/budgets/current'),
@@ -111,6 +115,7 @@ export function App() {
         apiClient.get('/subscriptions'),
         apiClient.get('/financial-health'),
         apiClient.get('/smart-insights'),
+        apiClient.get('/notifications'),
       ]);
 
       if (walletsRes.success) setWallets(walletsRes.wallets || []);
@@ -120,6 +125,7 @@ export function App() {
       if (billsRes.success) setBills(billsRes.bills || []);
       if (subscriptionsRes.success) setSubscriptions(subscriptionsRes.subscriptions || []);
       if (insightsRes?.success && insightsRes.data?.timeline) setTimeline(insightsRes.data.timeline);
+      if (notificationsRes?.success) { setNotifications(notificationsRes.notifications || []); setUnreadNotifications(notificationsRes.unreadCount || 0); }
       if (healthRes.success && healthRes.status === 'CALCULATED' && healthRes.score) {
         setHealthScore(healthRes.score);
       } else {
@@ -240,12 +246,30 @@ export function App() {
         setEmergencyMode={setEmergencyMode}
         onOpenAdmin={() => setShowAdminModal(true)}
         onOpenVoice={() => setActiveTab('transactions')}
-        unreadAlertsCount={0}
+        unreadAlertsCount={unreadNotifications}
+        onOpenNotifications={() => setShowNotifications(true)}
         isAdmin={userRole === 'admin'}
         userEmail={user.email || undefined}
         userName={user.displayName || undefined}
         onOpenProfile={() => setActiveTab('profile')}
         onLogout={handleLogout}
+      />
+
+      <NotificationsPanel
+        open={showNotifications}
+        onClose={() => setShowNotifications(false)}
+        notifications={notifications}
+        lang={lang}
+        onRead={async (id) => {
+          await apiClient.patch(`/notifications/${id}/read`, {});
+          setNotifications(prev => prev.map(n => n.id === id ? { ...n, isRead: true } : n));
+          setUnreadNotifications(prev => Math.max(0, prev - (notifications.find(n => n.id === id)?.isRead ? 0 : 1)));
+        }}
+        onReadAll={async () => {
+          await apiClient.post('/notifications/read-all', {});
+          setNotifications(prev => prev.map(n => ({ ...n, isRead: true })));
+          setUnreadNotifications(0);
+        }}
       />
 
       {/* Main Container Layout */}
