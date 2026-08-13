@@ -1588,6 +1588,390 @@ ${code}
       }
 
       // ========================================================
+// Handle Pending Bill Selection
+// MUST run BEFORE normal intent/Gemini parsing.
+// ========================================================
+
+const pendingSelectionRef = db
+  .collection('telegram_pending_transactions')
+  .doc(String(telegramUserId));
+
+const pendingSelectionDoc =
+  await pendingSelectionRef.get();
+
+if (pendingSelectionDoc.exists) {
+  const pendingSelection =
+    pendingSelectionDoc.data();
+
+  if (
+    pendingSelection &&
+    pendingSelection.actionType === 'bill_selection'
+  ) {
+    // Expired pending selection
+    if (
+      pendingSelection.used === true ||
+      Date.now() >
+        Number(pendingSelection.expiresAt || 0)
+    ) {
+      await pendingSelectionRef.delete();
+
+      await sendTelegramMessage(
+        chatId,
+        `⏰ اختيار الفاتورة انتهت صلاحيته.
+
+ابعت عملية السداد من جديد.`
+      );
+
+      return res.status(200).json({
+        success: true,
+        received: true,
+      });
+    }
+
+    // Allow cancel while choosing
+    if (
+      normalized === 'الغاء' ||
+      normalized === 'لا' ||
+      normalized === 'مش عايز'
+    ) {
+      await pendingSelectionRef.delete();
+
+      await sendTelegramMessage(
+        chatId,
+        '❌ تم إلغاء اختيار الفاتورة.'
+      );
+
+      return res.status(200).json({
+        success: true,
+        received: true,
+      });
+    }
+
+    const selectionMatch =
+      String(text || '')
+        .trim()
+        .match(/^\d+$/);
+
+    if (!selectionMatch) {
+      await sendTelegramMessage(
+        chatId,
+        `🧾 عندك اختيار فاتورة منتظر.
+
+اكتب رقم الفاتورة من القائمة فقط.
+
+مثال:
+1
+
+أو اكتب:
+إلغاء`
+      );
+
+      return res.status(200).json({
+        success: true,
+        received: true,
+      });
+    }
+
+    const selectionNumber =
+      Number(selectionMatch[0]);
+
+    const candidates =
+      Array.isArray(
+        pendingSelection.candidates
+      )
+        ? pendingSelection.candidates
+        : [];
+
+    const selectedCandidate =
+      candidates[selectionNumber - 1];
+
+    if (!selectedCandidate) {
+      await sendTelegramMessage(
+        chatId,
+        `⚠️ الرقم غير موجود في قائمة الفواتير.
+
+اختار رقم من 1 إلى ${candidates.length}.
+
+أو اكتب:
+إلغاء`
+      );
+
+      return res.status(200).json({
+        success: true,
+        received: true,
+      });
+    }
+
+    // Re-read bills from Firestore so we never trust stale
+    // pending data for financial execution.
+    const liveBills =
+      await billRepository.getBills(
+        linkedUserId
+      );
+
+    const selectedBill: any =
+      liveBills.find(
+        (bill: any) =>
+          String(bill.id) ===
+          String(selectedCandidate.billId)
+      );
+
+    if (!selectedBill) {
+      await pendingSelectionRef.delete();
+
+      await sendTelegramMessage(
+        chatId,
+        `⚠️ الفاتورة المختارة لم تعد موجودة.
+
+ابعت عملية السداد من جديد.`
+      );
+
+      return res.status(200).json({
+        success: true,
+        received: true,
+      });
+    }
+
+    if (selectedBill.isPaid) {
+      await pendingSelectionRef.delete();
+
+      await sendTelegramMessage(
+        chatId,
+        `✅ الفاتورة المختارة مدفوعة بالفعل.
+
+ابعت عملية السداد من جديد لو عايز تسدد فاتورة أخرى.`
+      );
+
+      return res.status(200).json({
+        success: true,
+        received: true,
+      });
+    }
+
+    const billAmount =
+      Number(selectedBill.amount || 0);
+
+    if (
+      !Number.isFinite(billAmount) ||
+      billAmount <= 0
+    ) {
+      await pendingSelectionRef.delete();
+
+      await sendTelegramMessage(
+        chatId,
+        '⚠️ قيمة الفاتورة المختارة غير صالحة.'
+      );
+
+      return res.status(200).json({
+        success: true,
+        received: true,
+      });
+    }
+
+    // Protect against amount mismatch from original message.
+    const requestedAmount =
+      pendingSelection.requestedAmount !==
+      undefined
+        ? Number(
+            pendingSelection.requestedAmount
+          )
+        : undefined;
+
+    if (
+      requestedAmount !== undefined &&
+      Number.isFinite(requestedAmount) &&
+      Math.abs(
+        requestedAmount - billAmount
+      ) > 0.01
+    ) {
+      await pendingSelectionRef.delete();
+
+      await sendTelegramMessage(
+        chatId,
+        `⚠️ المبلغ اللي كتبته مختلف عن قيمة الفاتورة المختارة.
+
+🧾 الفاتورة:
+${selectedBill.titleAr || selectedBill.title}
+
+💰 قيمة الفاتورة:
+${formatMoney(billAmount)} ج.م
+
+💵 المبلغ اللي كتبته:
+${formatMoney(requestedAmount)} ج.م
+
+ابعت عملية السداد من جديد بالقيمة الصحيحة.`
+      );
+
+      return res.status(200).json({
+        success: true,
+        received: true,
+      });
+    }
+
+    // Resolve wallet from the ORIGINAL payment message,
+    // not from the numeric reply "1" / "2".
+    const originalPaymentText =
+      String(
+        pendingSelection.originalText || ''
+      );
+
+    const walletMatch =
+      await matchWalletForUser(
+        linkedUserId,
+        originalPaymentText
+      );
+
+    if (walletMatch.ambiguous) {
+      await pendingSelectionRef.delete();
+
+      const walletNames =
+        walletMatch.wallets
+          .map(
+            (item: any) =>
+              item.nameAr ||
+              item.name ||
+              item.id
+          )
+          .join('، ');
+
+      await sendTelegramMessage(
+        chatId,
+        `👛 لقيت أكتر من محفظة ممكن تقصدها:
+
+${walletNames}
+
+ابعت عملية السداد من جديد وحدد المحفظة بالاسم.`
+      );
+
+      return res.status(200).json({
+        success: true,
+        received: true,
+      });
+    }
+
+    if (
+      hasExplicitWalletReference(
+        originalPaymentText
+      ) &&
+      !walletMatch.wallet
+    ) {
+      await pendingSelectionRef.delete();
+
+      await sendTelegramMessage(
+        chatId,
+        `⚠️ مش لاقي المحفظة اللي ذكرتها.
+
+ابعت عملية السداد من جديد واكتب اسم المحفظة زي ما هو مسجل في Mizaniya AI.`
+      );
+
+      return res.status(200).json({
+        success: true,
+        received: true,
+      });
+    }
+
+    const wallet =
+      walletMatch.wallet ||
+      (await getPrimaryWallet(
+        linkedUserId
+      ));
+
+    if (!wallet) {
+      await pendingSelectionRef.delete();
+
+      await sendTelegramMessage(
+        chatId,
+        `⚠️ مفيش محفظة متاحة في حسابك.
+
+أنشئ محفظة من Mizaniya AI الأول.`
+      );
+
+      return res.status(200).json({
+        success: true,
+        received: true,
+      });
+    }
+
+    const now = Date.now();
+
+    // Convert bill_selection -> bill_payment
+    // Now normal "تأكيد" flow can execute it atomically.
+    await pendingSelectionRef.set({
+      userId: linkedUserId,
+      telegramUserId,
+      chatId,
+
+      actionType: 'bill_payment',
+
+      billId:
+        selectedBill.id,
+
+      billTitle:
+        selectedBill.titleAr ||
+        selectedBill.title,
+
+      amount:
+        billAmount,
+
+      walletId:
+        wallet.id,
+
+      walletName:
+        wallet.nameAr ||
+        wallet.name,
+
+      walletCurrency:
+        wallet.currency ||
+        'EGP',
+
+      used: false,
+
+      createdAt: now,
+
+      expiresAt:
+        now +
+        PENDING_TX_EXPIRY_MINUTES *
+          60 *
+          1000,
+    });
+
+    await sendTelegramMessage(
+      chatId,
+      `🧾 تم اختيار الفاتورة رقم ${selectionNumber}.
+
+📌 الفاتورة:
+${selectedBill.titleAr || selectedBill.title}
+
+💰 المبلغ:
+${formatMoney(billAmount)} ج.م
+
+📅 تاريخ الاستحقاق:
+${selectedBill.dueDate || '-'}
+
+👛 سيتم الخصم من:
+${wallet.nameAr || wallet.name}
+
+بعد التأكيد سيتم:
+✅ تسجيل المصروف
+✅ خصم المبلغ من المحفظة
+✅ تعليم الفاتورة كمدفوعة
+✅ تحديث الميزانية
+
+اكتب:
+تأكيد
+
+أو:
+إلغاء`
+    );
+
+    return res.status(200).json({
+      success: true,
+      received: true,
+    });
+  }
+}
+
+      // ========================================================
       // Confirm Pending Action
       // ========================================================
 
@@ -2804,23 +3188,104 @@ ${walletNames}
           }
 
           if (matchingBills.length > 1) {
-            const list = matchingBills
-              .map(
-                (bill: any, index: number) =>
-                  `${index + 1}. ${bill.titleAr || bill.title} — ${formatMoney(Number(bill.amount || 0))} ج.م — ${bill.dueDate || '-'}`
-              )
-              .join('\n');
+  const now = Date.now();
 
-            await sendTelegramMessage(
-              chatId,
-              `🧾 لقيت أكتر من فاتورة غير مدفوعة مطابقة:\n\n${list}\n\nاكتب اسم الفاتورة بشكل أوضح.`
-            );
+  const candidates =
+    matchingBills.map(
+      (bill: any) => ({
+        billId: String(bill.id),
+        billTitle:
+          bill.titleAr ||
+          bill.title ||
+          'فاتورة',
+        amount:
+          Number(bill.amount || 0),
+        dueDate:
+          String(
+            bill.dueDate || ''
+          ),
+      })
+    );
 
-            return res.status(200).json({
-              success: true,
-              received: true,
-            });
-          }
+  await db
+    .collection(
+      'telegram_pending_transactions'
+    )
+    .doc(
+      String(telegramUserId)
+    )
+    .set({
+      userId:
+        linkedUserId,
+
+      telegramUserId,
+
+      chatId,
+
+      actionType:
+        'bill_selection',
+
+      candidates,
+
+      requestedAmount:
+        billPaymentCandidate.amount ??
+        null,
+
+      originalText:
+        processingText || '',
+
+      used: false,
+
+      createdAt:
+        now,
+
+      expiresAt:
+        now +
+        PENDING_TX_EXPIRY_MINUTES *
+          60 *
+          1000,
+    });
+
+  const list =
+    matchingBills
+      .map(
+        (
+          bill: any,
+          index: number
+        ) =>
+          `${index + 1}. ${
+            bill.titleAr ||
+            bill.title
+          } — ${formatMoney(
+            Number(
+              bill.amount || 0
+            )
+          )} ج.م — ${
+            bill.dueDate || '-'
+          }`
+      )
+      .join('\n');
+
+  await sendTelegramMessage(
+    chatId,
+    `🧾 لقيت أكتر من فاتورة غير مدفوعة مطابقة:
+
+${list}
+
+اختار رقم الفاتورة اللي دفعتها.
+
+مثال:
+2
+
+أو اكتب:
+إلغاء`
+  );
+
+  return res.status(200).json({
+    success: true,
+    received: true,
+  });
+}
         }
 
         // ======================================================
