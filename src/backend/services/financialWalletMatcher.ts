@@ -31,6 +31,32 @@ function normalizeArabicText(text: string): string {
 }
 
 // ============================================================
+// Canonical wallet phrase
+//
+// Makes natural Arabic references such as "الكاش" match a wallet
+// literally named "كاش", and also repairs matching for legacy wallet
+// names that accidentally included an opening-balance phrase.
+// ============================================================
+
+function canonicalWalletPhrase(text: string): string {
+  let value = normalizeArabicText(text);
+
+  // Remove accidental legacy suffixes such as:
+  // "فودافون كاش ورصيدها 1000 جنيه" -> "فودافون كاش"
+  value = value
+    .replace(/\s+(?:و\s*)?(?:رصيدها|رصيده|برصيد|رصيد)\s*[:：-]?\s*\d+(?:[.,]\d+)?(?:\s*(?:جنيه|جنيهات|egp|usd|sar|eur))?.*$/i, '')
+    .trim();
+
+  // Arabic definite article: "الكاش" -> "كاش".
+  // Keep this narrowly scoped to the beginning of the phrase.
+  if (value.startsWith('ال') && value.length > 3) {
+    value = value.slice(2).trim();
+  }
+
+  return value;
+}
+
+// ============================================================
 // Unique normalized strings
 // ============================================================
 
@@ -60,10 +86,12 @@ function getWalletExplicitNames(wallet: any): string[] {
 
   if (name) {
     names.push(name);
+    names.push(canonicalWalletPhrase(name));
   }
 
   if (nameAr) {
     names.push(nameAr);
+    names.push(canonicalWalletPhrase(nameAr));
   }
 
   return uniqueNormalized(names);
@@ -211,8 +239,8 @@ function calculateScore(
   source: string,
   target: string
 ): number {
-  const a = normalizeArabicText(source);
-  const b = normalizeArabicText(target);
+  const a = canonicalWalletPhrase(source);
+  const b = canonicalWalletPhrase(target);
 
   if (!a || !b) {
     return 0;
@@ -329,7 +357,7 @@ function findExactWalletName(
   searchText: string
 ): any | null {
   const normalizedSearch =
-    normalizeArabicText(searchText);
+    canonicalWalletPhrase(searchText);
 
   if (!normalizedSearch) {
     return null;

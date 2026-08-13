@@ -184,15 +184,35 @@ function parseWalletCreate(text: string): {
 
   let name = '';
   const raw = String(text || '').trim();
-  const nameMatch = raw.match(/(?:اسمها|باسم)\s+(.+?)(?=\s+(?:ورصيدها|رصيدها|برصيد|رصيد)\b|$)/i);
+
+  // NOTE: JavaScript \b is ASCII/word-character oriented and is unreliable
+  // around Arabic text. Use an explicit Arabic-friendly lookahead instead.
+  // Example:
+  // "اعمل محفظة جديدة اسمها فودافون كاش ورصيدها 1000 جنيه"
+  // => name = "فودافون كاش", balance = 1000
+  const balanceBoundary =
+    String.raw`(?=\s+(?:و\s*)?(?:رصيدها|رصيده|برصيد|رصيد)\s*(?:[:：-]?\s*)?\d|$)`;
+
+  const nameMatch = raw.match(
+    new RegExp(`(?:اسمها|اسمه|باسم)\\s+(.+?)${balanceBoundary}`, 'i')
+  );
   if (nameMatch) name = nameMatch[1].trim();
 
   if (!name) {
-    const fallback = raw.match(/(?:محفظة|محفظه|حساب)\s+(?:جديدة|جديد)?\s*(?:اسمها|باسم)?\s*(.+?)(?=\s+(?:ورصيدها|رصيدها|برصيد|رصيد)\b|$)/i);
+    const fallback = raw.match(
+      new RegExp(
+        `(?:محفظة|محفظه|حساب)\\s+(?:جديدة|جديده|جديد)?\\s*(?:اسمها|اسمه|باسم)?\\s*(.+?)${balanceBoundary}`,
+        'i'
+      )
+    );
     if (fallback) name = fallback[1].trim();
   }
 
-  name = name.replace(/^(جديده|جديدة|جديد)\s+/i, '').trim();
+  // Defensive cleanup for previously malformed phrases.
+  name = name
+    .replace(/^(جديده|جديدة|جديد)\s+/i, '')
+    .replace(/\s+(?:و\s*)?(?:رصيدها|رصيده|برصيد|رصيد)\s*[:：-]?\s*\d.*$/i, '')
+    .trim();
   if (!name || /^جديد[هة]?$/.test(name)) return null;
 
   const amount = parseAmount(text) ?? 0;
