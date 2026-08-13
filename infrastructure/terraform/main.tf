@@ -1,8 +1,9 @@
 # MIZANIYA AI — Staging/Production GCP Infrastructure
 #
-# Firestore, Artifact Registry, Gemini Secret, and Telegram Bot Secret
-# are intentionally treated as externally bootstrapped resources to
-# avoid duplicate-ownership conflicts.
+# Firestore, Artifact Registry, Gemini Secret, Telegram Bot Secret,
+# and Telegram Webhook Secret are intentionally treated as
+# externally bootstrapped resources to avoid duplicate-ownership
+# conflicts.
 
 terraform {
   required_version = ">= 1.15.0, < 1.16.0"
@@ -128,6 +129,28 @@ data "google_secret_manager_secret" "telegram_bot_token" {
 }
 
 # ============================================================
+# Telegram Webhook Secret
+# ============================================================
+#
+# The Secret Manager secret "telegram-webhook-secret" is
+# bootstrapped outside this Terraform module.
+#
+# It must contain the exact same secret_token registered with
+# Telegram setWebhook.
+#
+# Terraform only reads the existing secret and grants the runtime
+# service account permission to access it.
+
+data "google_secret_manager_secret" "telegram_webhook_secret" {
+  project   = var.gcp_project_id
+  secret_id = "telegram-webhook-secret"
+
+  depends_on = [
+    google_project_service.required_services
+  ]
+}
+
+# ============================================================
 # 2. VPC & Serverless VPC Access
 # ============================================================
 
@@ -203,6 +226,13 @@ resource "google_secret_manager_secret_iam_member" "gemini_key_accessor" {
 resource "google_secret_manager_secret_iam_member" "telegram_bot_token_accessor" {
   project   = var.gcp_project_id
   secret_id = data.google_secret_manager_secret.telegram_bot_token.secret_id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.app_sa.email}"
+}
+
+resource "google_secret_manager_secret_iam_member" "telegram_webhook_secret_accessor" {
+  project   = var.gcp_project_id
+  secret_id = data.google_secret_manager_secret.telegram_webhook_secret.secret_id
   role      = "roles/secretmanager.secretAccessor"
   member    = "serviceAccount:${google_service_account.app_sa.email}"
 }
@@ -288,8 +318,11 @@ resource "google_cloud_run_v2_service" "mizaniya_app" {
     google_project_service.required_services,
     google_redis_instance.cache,
     google_vpc_access_connector.vpc_connector,
+
     google_secret_manager_secret_iam_member.gemini_key_accessor,
     google_secret_manager_secret_iam_member.telegram_bot_token_accessor,
+    google_secret_manager_secret_iam_member.telegram_webhook_secret_accessor,
+
     google_project_iam_member.firestore_user,
     google_project_iam_member.pubsub_publisher,
     google_project_iam_member.cloudtasks_enqueuer,
@@ -317,6 +350,10 @@ resource "google_cloud_run_v2_service" "mizaniya_app" {
           memory = "2Gi"
         }
       }
+
+      # ======================================================
+      # Runtime Environment
+      # ======================================================
 
       env {
         name  = "NODE_ENV"
@@ -388,6 +425,21 @@ resource "google_cloud_run_v2_service" "mizaniya_app" {
         value_source {
           secret_key_ref {
             secret  = data.google_secret_manager_secret.telegram_bot_token.secret_id
+            version = "latest"
+          }
+        }
+      }
+
+      # ======================================================
+      # Telegram Webhook Secret
+      # ======================================================
+
+      env {
+        name = "TELEGRAM_WEBHOOK_SECRET"
+
+        value_source {
+          secret_key_ref {
+            secret  = data.google_secret_manager_secret.telegram_webhook_secret.secret_id
             version = "latest"
           }
         }
