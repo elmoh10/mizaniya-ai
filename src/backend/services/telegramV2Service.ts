@@ -3,7 +3,7 @@ import { transactionRepository } from '../repositories/transactionRepository';
 import { matchWalletForUser } from './financialWalletMatcher';
 import { getTrustedFinancialContext } from './financialContextService';
 import { executeBillPayment } from './financialExecutionService';
-import { billRepository } from '../repositories/budgetAndGoalRepositories';
+import { billRepository, goalRepository } from '../repositories/budgetAndGoalRepositories';
 import {
   editTransactionAtomic,
   restoreTransactionAtomic,
@@ -243,6 +243,63 @@ function parseTransfer(text: string): { amount: number; source: string; destinat
   return { amount, source, destination };
 }
 
+
+function parseGoalDate(text: string): string {
+  const raw = String(text || '');
+  const iso = raw.match(/\b(20\d{2})[-\/]([01]?\d)[-\/]([0-3]?\d)\b/);
+  if (iso) return `${iso[1]}-${String(Number(iso[2])).padStart(2, '0')}-${String(Number(iso[3])).padStart(2, '0')}`;
+  const n = normalizeArabicText(raw);
+  const yearMatch = n.match(/\b(20\d{2})\b/);
+  const year = yearMatch ? Number(yearMatch[1]) : new Date().getFullYear() + 1;
+  const months: Record<string, number> = { يناير:1, فبراير:2, مارس:3, ابريل:4, مايو:5, يونيو:6, يوليو:7, اغسطس:8, سبتمبر:9, اكتوبر:10, نوفمبر:11, ديسمبر:12 };
+  for (const [name, month] of Object.entries(months)) {
+    if (n.includes(name)) return `${year}-${String(month).padStart(2, '0')}-01`;
+  }
+  return `${year}-12-31`;
+}
+
+function goalMonthlyTarget(target: number, current: number, targetDate: string): number {
+  const end = new Date(`${targetDate}T12:00:00Z`).getTime();
+  const months = Math.max(1, Math.ceil((end - Date.now()) / (30.4375 * 86400000)));
+  return Math.max(0, Math.ceil((target - current) / months));
+}
+
+function goalLabel(goal: any): string {
+  const target = Math.max(0, Number(goal.targetAmount || 0));
+  const current = Math.max(0, Number(goal.currentAmount || 0));
+  const pct = target > 0 ? Math.min(100, Math.round((current / target) * 100)) : 0;
+  return `${goal.titleAr || goal.title || 'هدف مالي'} — ${formatMoney(current)} / ${formatMoney(target)} ج.م (${pct}%)`;
+}
+
+async function findGoalCandidates(userId: string, hint: string, includeArchived = false): Promise<any[]> {
+  const goals: any[] = await goalRepository.getGoals(userId, includeArchived);
+  const n = normalizeArabicText(hint);
+  if (/اخر هدف/.test(n)) return goals.slice(-1).reverse().slice(0, 1);
+  const noise = ['هدف','الهدف','عايز','اريد','اعمل','انشئ','اضف','زود','حط','حوش','وفر','اسحب','من','في','على','الي','اكتب','عدل','غير','احذف','امسح','رجع','استرجع','جنيه'];
+  let clean = n.replace(/\d+(?:[.,]\d+)?/g, ' ');
+  for (const word of noise) clean = clean.split(normalizeArabicText(word)).join(' ');
+  clean = clean.replace(/\b20\d{2}\b/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!clean) return goals.slice(0, 5);
+  return goals.map((goal:any) => {
+    const title = normalizeArabicText(`${goal.titleAr || ''} ${goal.title || ''}`);
+    const words = clean.split(' ').filter(w => w.length > 1);
+    const hits = words.filter(w => title.includes(w) || w.includes(title)).length;
+    return { goal, score: hits / Math.max(1, words.length) };
+  }).filter(x => x.score >= 0.34).sort((a,b)=>b.score-a.score).map(x=>x.goal).slice(0,5);
+}
+
+function parseGoalCreate(text: string): { title: string; targetAmount: number; targetDate: string } | null {
+  const n = normalizeArabicText(text);
+  if (!/(هدف|اوفر|احوش|توفير|ادخار)/.test(n) || /(الشهر|شهري)/.test(n)) return null;
+  if (!/(اعمل|انشئ|اضف|عايز|اريد|نفسي)/.test(n)) return null;
+  const amount = parseAmount(text); if (!amount) return null;
+  let title = String(text).replace(/\d+(?:[.,]\d+)?/g,' ').replace(/\b20\d{2}\b/g,' ')
+    .replace(/(?:عايز|أريد|اريد|نفسي|اعمل|أنشئ|انشئ|اضف|هدف|اوفر|أوفر|احوش|جنيه|جنية|قبل|بحلول|لحد|لسنة|سنة)/gi,' ')
+    .replace(/\s+/g,' ').trim();
+  title = title.replace(/(?:يناير|فبراير|مارس|ابريل|أبريل|مايو|يونيو|يوليو|اغسطس|أغسطس|سبتمبر|اكتوبر|أكتوبر|نوفمبر|ديسمبر).*$/i,'').trim();
+  if (!title) title = 'هدف ادخار';
+  return { title, targetAmount: amount, targetDate: parseGoalDate(text) };
+}
 
 function detectWalletType(name: string): Wallet['type'] {
   const n = normalizeArabicText(name);
@@ -703,6 +760,75 @@ async function handleV2Pending(input: HandlerInput): Promise<HandlerResult> {
       return { handled: true };
     }
 
+    if (pending.actionType === 'v2_create_goal') {
+      const target = Number(pending.targetAmount || 0);
+      const date = String(pending.targetDate || parseGoalDate(''));
+      const goal = await goalRepository.saveGoal(userId, {
+        id: '', title: String(pending.title), titleAr: String(pending.title), targetAmount: target,
+        currentAmount: 0, targetDate: date, category: 'general', icon: 'Target', color: 'bg-emerald-500',
+        monthlyTarget: goalMonthlyTarget(target, 0, date), riskLevel: 'Medium', successProbability: 80,
+      } as any);
+      await ref.delete();
+      await sendMessage(chatId, `✅ تم إنشاء الهدف بنجاح.\n\n🎯 ${goal.titleAr || goal.title}\n💰 الهدف: ${formatMoney(goal.targetAmount)} ج.م\n📅 الموعد: ${goal.targetDate}\n🐷 المطلوب تقريبًا: ${formatMoney(goal.monthlyTarget)} ج.م شهريًا`);
+      return { handled: true };
+    }
+
+    if (pending.actionType === 'v2_goal_contribution' || pending.actionType === 'v2_goal_withdraw') {
+      const goal: any = await goalRepository.getGoal(userId, String(pending.goalId));
+      if (!goal || goal.isArchived) throw new Error('الهدف لم يعد موجودًا.');
+      const amount = Number(pending.amount || 0);
+      const current = Number(goal.currentAmount || 0);
+      const isWithdraw = pending.actionType === 'v2_goal_withdraw';
+      if (isWithdraw && amount > current) throw new Error(`المبلغ أكبر من المدخر في الهدف (${formatMoney(current)} ج.م).`);
+      const wallet = (await getWalletsForUser(userId)).find(w => w.id === String(pending.walletId));
+      if (!wallet) throw new Error('المحفظة لم تعد موجودة.');
+      if (!isWithdraw && Number(wallet.balance || 0) < amount) throw new Error('رصيد المحفظة غير كافٍ.');
+      const tx = await transactionRepository.createTransaction(userId, {
+        title: `${isWithdraw ? 'سحب من' : 'ادخار في'} هدف ${goal.titleAr || goal.title}`,
+        amount, currency: wallet.currency || 'EGP', type: isWithdraw ? 'income' : 'expense',
+        category: 'Emergency & Savings', walletId: wallet.id, paymentMethod: 'Cash', date: cairoDate(),
+        notes: `Goal:${goal.id}`, aiTag: isWithdraw ? 'telegram-goal-withdraw' : 'telegram-goal-contribution',
+      } as any);
+      const newCurrent = Math.max(0, Math.min(Number(goal.targetAmount || 0), isWithdraw ? current - amount : current + amount));
+      const updated: any = await goalRepository.updateGoal(userId, goal.id, {
+        currentAmount: newCurrent,
+        monthlyTarget: goalMonthlyTarget(Number(goal.targetAmount || 0), newCurrent, String(goal.targetDate)),
+        lastContributionTransactionId: tx.id,
+      });
+      await markBudgetStale(userId); await ref.delete();
+      await sendMessage(chatId, `✅ ${isWithdraw ? 'تم السحب من الهدف' : 'تمت إضافة الادخار للهدف'} بنجاح.\n\n🎯 ${updated.titleAr || updated.title}\n💰 الحالي: ${formatMoney(updated.currentAmount)} / ${formatMoney(updated.targetAmount)} ج.م\n👛 ${isWithdraw ? 'تمت الإضافة إلى' : 'تم الخصم من'}: ${wallet.nameAr || wallet.name}`);
+      return { handled: true };
+    }
+
+    if (pending.actionType === 'v2_edit_goal') {
+      const goal: any = await goalRepository.getGoal(userId, String(pending.goalId));
+      if (!goal) throw new Error('الهدف لم يعد موجودًا.');
+      const target = Number(pending.targetAmount || goal.targetAmount);
+      const date = String(pending.targetDate || goal.targetDate);
+      const updated: any = await goalRepository.updateGoal(userId, goal.id, {
+        targetAmount: target, targetDate: date,
+        monthlyTarget: goalMonthlyTarget(target, Number(goal.currentAmount || 0), date),
+      });
+      await ref.delete();
+      await sendMessage(chatId, `✅ تم تعديل الهدف.\n\n🎯 ${goalLabel(updated)}\n📅 ${updated.targetDate}\n🐷 المطلوب شهريًا: ${formatMoney(updated.monthlyTarget)} ج.م`);
+      return { handled: true };
+    }
+
+    if (pending.actionType === 'v2_delete_goal') {
+      const goal: any = await goalRepository.getGoal(userId, String(pending.goalId));
+      if (!goal) throw new Error('الهدف لم يعد موجودًا.');
+      await goalRepository.archiveGoal(userId, goal.id); await ref.delete();
+      await sendMessage(chatId, `🗑️ تم حذف/أرشفة الهدف: ${goal.titleAr || goal.title}\n\nتقدر تقول: رجع آخر هدف محذوف`);
+      return { handled: true };
+    }
+
+    if (pending.actionType === 'v2_restore_goal') {
+      const goal: any = await goalRepository.restoreGoal(userId, String(pending.goalId));
+      if (!goal) throw new Error('الهدف لم يعد موجودًا.');
+      await ref.delete(); await sendMessage(chatId, `♻️ تم استرجاع الهدف بنجاح: ${goalLabel(goal)}`);
+      return { handled: true };
+    }
+
     if (pending.actionType === 'v2_savings_target') {
       const amount = Number(pending.amount || 0);
       const monthKey = currentMonthKey();
@@ -896,7 +1022,8 @@ async function handleReadQueries(input: HandlerInput): Promise<HandlerResult> {
       const current = Math.max(0, Number(goal.currentAmount || 0));
       const remaining = Math.max(0, target - current);
       const percent = target > 0 ? Math.min(100, Math.round((current / target) * 100)) : 0;
-      return `${index + 1}. ${goal.titleAr || goal.title || 'هدف مالي'}\n   💰 ${formatMoney(current)} / ${formatMoney(target)} ج.م — ${percent}%\n   🎯 المتبقي: ${formatMoney(remaining)} ج.م${goal.targetDate ? ` — 📅 ${goal.targetDate}` : ''}`;
+      const monthly = goalMonthlyTarget(target, current, String(goal.targetDate || parseGoalDate('')));
+      return `${index + 1}. ${goal.titleAr || goal.title || 'هدف مالي'}\n   💰 ${formatMoney(current)} / ${formatMoney(target)} ج.م — ${percent}%\n   🎯 المتبقي: ${formatMoney(remaining)} ج.م${goal.targetDate ? ` — 📅 ${goal.targetDate}` : ''}\n   🐷 المطلوب تقريبًا: ${formatMoney(monthly)} ج.م شهريًا`;
     });
     await sendMessage(chatId, `🎯 أهدافك المالية:\n\n${lines.join('\n\n')}`);
     return { handled: true };
@@ -1153,6 +1280,49 @@ export async function handleTelegramFinancialAssistantV2(input: HandlerInput): P
     });
     await sendMessage(chatId, `🔄 تحويل جاهز للتأكيد:\n\n💰 ${formatMoney(transfer.amount)} ج.م\n👛 من: ${sourceMatch.wallet.nameAr || sourceMatch.wallet.name}\n👛 إلى: ${destinationMatch.wallet.nameAr || destinationMatch.wallet.name}\n\nاكتب: تأكيد\nأو: إلغاء`);
     return { handled: true };
+  }
+
+  const createGoal = parseGoalCreate(text);
+  if (createGoal) {
+    await savePending(telegramUserId, { actionType: 'v2_create_goal', userId, chatId, ...createGoal });
+    await sendMessage(chatId, `🎯 هدف جديد جاهز للتأكيد:\n\n📝 ${createGoal.title}\n💰 ${formatMoney(createGoal.targetAmount)} ج.م\n📅 ${createGoal.targetDate}\n🐷 المطلوب تقريبًا: ${formatMoney(goalMonthlyTarget(createGoal.targetAmount, 0, createGoal.targetDate))} ج.م شهريًا\n\nاكتب: تأكيد\nأو: إلغاء`);
+    return { handled: true };
+  }
+
+  if (/(زود|حط|ضيف|ادخر|حوش|وفرت|حطيت).*(هدف)/.test(n) || /(هدف).*(زود|حط|ضيف|ادخر|حوش|وفرت)/.test(n)) {
+    const amount = parseAmount(text); if (!amount) { await sendMessage(chatId, 'حدد المبلغ، مثال: حط 500 جنيه في هدف العربية من الكاش'); return { handled:true }; }
+    const goals = await findGoalCandidates(userId, text); if (goals.length !== 1) { await sendMessage(chatId, goals.length ? `🎯 حدد الهدف بدقة:\n${goals.map((g:any,i:number)=>`${i+1}. ${goalLabel(g)}`).join('\n')}` : '🎯 ملقتش هدف مطابق.'); return { handled:true }; }
+    const walletMatch = await matchWalletForUser(userId, text); if (walletMatch.ambiguous || !walletMatch.wallet) { await sendMessage(chatId, '👛 اكتب المحفظة بوضوح، مثال: حط 500 في هدف العربية من الكاش'); return { handled:true }; }
+    await savePending(telegramUserId, { actionType:'v2_goal_contribution', userId, chatId, goalId:goals[0].id, amount, walletId:walletMatch.wallet.id });
+    await sendMessage(chatId, `🐷 إضافة ادخار جاهزة:\n\n🎯 ${goals[0].titleAr || goals[0].title}\n💰 ${formatMoney(amount)} ج.م\n👛 من: ${walletMatch.wallet.nameAr || walletMatch.wallet.name}\n\nاكتب: تأكيد\nأو: إلغاء`); return { handled:true };
+  }
+
+  if (/(اسحب|خد|ارجع).*(هدف)/.test(n)) {
+    const amount = parseAmount(text); if (!amount) { await sendMessage(chatId, 'حدد مبلغ السحب من الهدف.'); return { handled:true }; }
+    const goals = await findGoalCandidates(userId, text); if (goals.length !== 1) { await sendMessage(chatId, goals.length ? `🎯 حدد الهدف بدقة:\n${goals.map((g:any,i:number)=>`${i+1}. ${goalLabel(g)}`).join('\n')}` : '🎯 ملقتش هدف مطابق.'); return { handled:true }; }
+    const walletMatch = await matchWalletForUser(userId, text); if (walletMatch.ambiguous || !walletMatch.wallet) { await sendMessage(chatId, '👛 اكتب محفظة الاستلام بوضوح، مثال: اسحب 200 من هدف العربية للكاش'); return { handled:true }; }
+    await savePending(telegramUserId, { actionType:'v2_goal_withdraw', userId, chatId, goalId:goals[0].id, amount, walletId:walletMatch.wallet.id });
+    await sendMessage(chatId, `↩️ سحب من هدف جاهز:\n\n🎯 ${goals[0].titleAr || goals[0].title}\n💰 ${formatMoney(amount)} ج.م\n👛 إلى: ${walletMatch.wallet.nameAr || walletMatch.wallet.name}\n\nاكتب: تأكيد\nأو: إلغاء`); return { handled:true };
+  }
+
+  if (/^(عدل|غير).*(هدف)/.test(n)) {
+    const goals = await findGoalCandidates(userId, text); if (goals.length !== 1) { await sendMessage(chatId, '🎯 اكتب اسم الهدف بوضوح علشان أعدله.'); return { handled:true }; }
+    const amount = parseAmount(text) || Number(goals[0].targetAmount); const date = /20\d{2}|يناير|فبراير|مارس|ابريل|مايو|يونيو|يوليو|اغسطس|سبتمبر|اكتوبر|نوفمبر|ديسمبر/.test(n) ? parseGoalDate(text) : goals[0].targetDate;
+    await savePending(telegramUserId, { actionType:'v2_edit_goal', userId, chatId, goalId:goals[0].id, targetAmount:amount, targetDate:date });
+    await sendMessage(chatId, `✏️ تعديل هدف جاهز:\n\n🎯 ${goals[0].titleAr || goals[0].title}\n💰 الهدف الجديد: ${formatMoney(amount)} ج.م\n📅 الموعد: ${date}\n\nاكتب: تأكيد\nأو: إلغاء`); return { handled:true };
+  }
+
+  if (/^(احذف|امسح|الغي).*(هدف)/.test(n)) {
+    const goals = await findGoalCandidates(userId, text); if (goals.length !== 1) { await sendMessage(chatId, '🎯 اكتب اسم الهدف بوضوح علشان أحذفه.'); return { handled:true }; }
+    await savePending(telegramUserId, { actionType:'v2_delete_goal', userId, chatId, goalId:goals[0].id });
+    await sendMessage(chatId, `🗑️ حذف هدف جاهز:\n\n${goalLabel(goals[0])}\n\nاكتب: تأكيد\nأو: إلغاء`); return { handled:true };
+  }
+
+  if (/رجع اخر هدف محذوف|استرجع اخر هدف محذوف/.test(n)) {
+    const all:any[] = await goalRepository.getGoals(userId, true); const archived = all.filter((g:any)=>g.isArchived).sort((a:any,b:any)=>String(b.archivedAt||'').localeCompare(String(a.archivedAt||'')));
+    if (!archived.length) { await sendMessage(chatId, 'مفيش أهداف محذوفة قابلة للاسترجاع.'); return { handled:true }; }
+    await savePending(telegramUserId, { actionType:'v2_restore_goal', userId, chatId, goalId:archived[0].id });
+    await sendMessage(chatId, `♻️ استرجاع هدف جاهز:\n\n${goalLabel(archived[0])}\n\nاكتب: تأكيد\nأو: إلغاء`); return { handled:true };
   }
 
   if (/(عايز|اريد|نفسي).*اوفر|وفرلي|اوفر|هدف الادخار|هدف التوفير/.test(n) && /(الشهر|شهري)/.test(n)) {

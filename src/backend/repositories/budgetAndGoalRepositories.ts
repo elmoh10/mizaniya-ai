@@ -23,16 +23,52 @@ export class GoalRepository {
     return db.collection('users').doc(userId).collection('goals');
   }
 
-  async getGoals(userId: string): Promise<Goal[]> {
+  async getGoals(userId: string, includeArchived = false): Promise<Goal[]> {
     const snapshot = await this.getCollection(userId).get();
-    return snapshot.docs.map((doc) => doc.data() as Goal);
+    return snapshot.docs
+      .map((doc) => ({ id: doc.id, ...doc.data() } as Goal & { isArchived?: boolean }))
+      .filter((goal: any) => includeArchived || goal.isArchived !== true);
+  }
+
+  async getGoal(userId: string, goalId: string): Promise<Goal | null> {
+    const doc = await this.getCollection(userId).doc(goalId).get();
+    if (!doc.exists) return null;
+    return { id: doc.id, ...doc.data() } as Goal;
   }
 
   async saveGoal(userId: string, goal: Goal): Promise<Goal> {
     const docRef = goal.id ? this.getCollection(userId).doc(goal.id) : this.getCollection(userId).doc();
-    const newGoal = { ...goal, id: docRef.id };
+    const now = new Date().toISOString();
+    const newGoal = { ...goal, id: docRef.id, updatedAt: now } as any;
+    if (!goal.id) newGoal.createdAt = now;
     await docRef.set(newGoal, { merge: true });
     return newGoal;
+  }
+
+  async updateGoal(userId: string, goalId: string, patch: Record<string, unknown>): Promise<Goal | null> {
+    const ref = this.getCollection(userId).doc(goalId);
+    const snap = await ref.get();
+    if (!snap.exists) return null;
+    await ref.set({ ...patch, updatedAt: new Date().toISOString() }, { merge: true });
+    const updated = await ref.get();
+    return { id: updated.id, ...updated.data() } as Goal;
+  }
+
+  async archiveGoal(userId: string, goalId: string): Promise<boolean> {
+    const ref = this.getCollection(userId).doc(goalId);
+    const snap = await ref.get();
+    if (!snap.exists) return false;
+    await ref.set({ isArchived: true, archivedAt: new Date().toISOString(), updatedAt: new Date().toISOString() }, { merge: true });
+    return true;
+  }
+
+  async restoreGoal(userId: string, goalId: string): Promise<Goal | null> {
+    const ref = this.getCollection(userId).doc(goalId);
+    const snap = await ref.get();
+    if (!snap.exists) return null;
+    await ref.set({ isArchived: false, restoredAt: new Date().toISOString(), updatedAt: new Date().toISOString() }, { merge: true });
+    const updated = await ref.get();
+    return { id: updated.id, ...updated.data() } as Goal;
   }
 }
 

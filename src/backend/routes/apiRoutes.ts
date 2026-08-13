@@ -1716,6 +1716,51 @@ router.post(
   }
 );
 
+router.put('/goals/:goalId', async (req: AuthenticatedRequest, res) => {
+  try {
+    const userId = req.user!.uid;
+    const goalId = String(req.params.goalId || '');
+    const existing = await goalRepository.getGoal(userId, goalId);
+    if (!existing) return res.status(404).json({ error: 'Goal not found' });
+    const targetAmount = req.body.targetAmount == null ? Number(existing.targetAmount) : Number(req.body.targetAmount);
+    const currentAmount = req.body.currentAmount == null ? Number(existing.currentAmount || 0) : Number(req.body.currentAmount);
+    if (!Number.isFinite(targetAmount) || targetAmount <= 0 || !Number.isFinite(currentAmount) || currentAmount < 0) {
+      return res.status(400).json({ error: 'Invalid goal amounts' });
+    }
+    const targetDate = String(req.body.targetDate || existing.targetDate || '');
+    const months = Math.max(1, Math.ceil((new Date(targetDate).getTime() - Date.now()) / (30.4375 * 86400000)));
+    const goal = await goalRepository.updateGoal(userId, goalId, {
+      ...(req.body.title ? { title: String(req.body.title), titleAr: String(req.body.titleAr || req.body.title) } : {}),
+      targetAmount,
+      currentAmount: Math.min(currentAmount, targetAmount),
+      targetDate,
+      monthlyTarget: Math.max(0, Math.ceil((targetAmount - Math.min(currentAmount, targetAmount)) / months)),
+      ...(req.body.category ? { category: String(req.body.category) } : {}),
+    });
+    return res.json({ success: true, goal });
+  } catch (err: any) {
+    return res.status(500).json({ error: 'Failed to update goal', details: err.message });
+  }
+});
+
+router.delete('/goals/:goalId', async (req: AuthenticatedRequest, res) => {
+  try {
+    const ok = await goalRepository.archiveGoal(req.user!.uid, String(req.params.goalId || ''));
+    return ok ? res.json({ success: true }) : res.status(404).json({ error: 'Goal not found' });
+  } catch (err: any) {
+    return res.status(500).json({ error: 'Failed to archive goal', details: err.message });
+  }
+});
+
+router.post('/goals/:goalId/restore', async (req: AuthenticatedRequest, res) => {
+  try {
+    const goal = await goalRepository.restoreGoal(req.user!.uid, String(req.params.goalId || ''));
+    return goal ? res.json({ success: true, goal }) : res.status(404).json({ error: 'Goal not found' });
+  } catch (err: any) {
+    return res.status(500).json({ error: 'Failed to restore goal', details: err.message });
+  }
+});
+
 // ============================================================
 // Bills
 // ============================================================

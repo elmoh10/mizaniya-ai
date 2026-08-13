@@ -101,6 +101,11 @@ export interface Goal {
   monthlyTarget: number;
   riskLevel: 'Low' | 'Medium' | 'High';
   successProbability: number;
+  isArchived?: boolean;
+  createdAt?: string;
+  updatedAt?: string;
+  archivedAt?: string;
+  restoredAt?: string;
 }
 
 export interface Subscription {
