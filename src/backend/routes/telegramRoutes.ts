@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { createHash, randomInt } from 'crypto';
+import { createHash, randomInt, timingSafeEqual } from 'crypto';
 
 import { db } from '../config/firebaseAdmin';
 
@@ -8,13 +8,27 @@ import {
   getObligationAmountDueForMonth,
 } from '../services/financialContextService';
 
+import {
+  matchWalletForUser,
+  hasExplicitWalletReference,
+} from '../services/financialWalletMatcher';
+
 import { transactionRepository } from '../repositories/transactionRepository';
+import { billRepository } from '../repositories/budgetAndGoalRepositories';
 import { getWalletsForUser } from '../services/walletService';
-import { transactionCreateSchema } from '../validators/schemas';
+import { transactionCreateSchema, billCreateSchema } from '../validators/schemas';
 import { recordDebtPayment } from '../services/debtService';
 import { createObligation } from '../services/obligationService';
+import { routeFinancialIntent } from '../services/financialIntentRouter';
+import { matchFinancialContext } from '../services/financialContextMatcher';
+
+import {
+  tryInterpretFinancialMessageWithGemini,
+  GeminiFinancialInterpretation,
+} from '../services/geminiFinancialInterpreter';
 
 import { CategoryType } from '../../types';
+import { authMiddleware, requireAdmin } from '../middlewares/authMiddleware';
 
 const router = Router();
 
@@ -85,6 +99,86 @@ function normalizeArabicText(text: string): string {
     .replace(/[ًٌٍَُِّْ]/g, '')
     .replace(/[؟?!.,،]/g, '')
     .trim();
+}
+
+// ============================================================
+// Telegram Webhook Security
+// ============================================================
+
+const TELEGRAM_SECRET_HEADER = 'x-telegram-bot-api-secret-token';
+
+function getTelegramWebhookSecret(): string {
+  return String(process.env.TELEGRAM_WEBHOOK_SECRET || '').trim();
+}
+
+function isValidTelegramWebhookSecret(secret: string): boolean {
+  return /^[A-Za-z0-9_-]{1,256}$/.test(secret);
+}
+
+function secureStringEquals(left: string, right: string): boolean {
+  const leftBuffer = Buffer.from(left, 'utf8');
+  const rightBuffer = Buffer.from(right, 'utf8');
+
+  if (leftBuffer.length !== rightBuffer.length) {
+    return false;
+  }
+
+  return timingSafeEqual(leftBuffer, rightBuffer);
+}
+
+function verifyTelegramWebhookRequest(
+  req: Request,
+  res: Response
+): boolean {
+  const configuredSecret = getTelegramWebhookSecret();
+
+  if (!configuredSecret) {
+    console.error(
+      'Telegram webhook rejected: TELEGRAM_WEBHOOK_SECRET is not configured.'
+    );
+
+    res.status(503).json({
+      success: false,
+      error: 'TELEGRAM_WEBHOOK_SECRET_NOT_CONFIGURED',
+    });
+
+    return false;
+  }
+
+  if (!isValidTelegramWebhookSecret(configuredSecret)) {
+    console.error(
+      'Telegram webhook rejected: TELEGRAM_WEBHOOK_SECRET has an invalid format.'
+    );
+
+    res.status(503).json({
+      success: false,
+      error: 'TELEGRAM_WEBHOOK_SECRET_INVALID',
+    });
+
+    return false;
+  }
+
+  const receivedSecret = String(
+    req.header(TELEGRAM_SECRET_HEADER) || ''
+  ).trim();
+
+  if (
+    !receivedSecret ||
+    !secureStringEquals(receivedSecret, configuredSecret)
+  ) {
+    console.warn(
+      'Telegram webhook rejected: invalid secret token.'
+    );
+
+    res.status(401).json({
+      success: false,
+      error: 'INVALID_TELEGRAM_WEBHOOK_SECRET',
+    });
+
+    return false;
+  }
+
+  return true;
 }
 
 // ============================================================
@@ -581,6 +675,160 @@ function extractObligationPaymentCandidate(
 }
 
 // ============================================================
+// Bill Helpers & Parsers
+// ============================================================
+
+function buildDueDateFromDay(day: number): string {
+  const now = new Date();
+  let year = now.getFullYear();
+  let month = now.getMonth();
+
+  const safeDay = Math.max(1, Math.min(31, Math.trunc(day)));
+  const lastDayThisMonth = new Date(year, month + 1, 0).getDate();
+  let candidateDay = Math.min(safeDay, lastDayThisMonth);
+  let candidate = new Date(year, month, candidateDay);
+  const today = new Date(year, month, now.getDate());
+
+  // If that due day already passed, use next month.
+  if (candidate < today) {
+    month += 1;
+    if (month > 11) {
+      month = 0;
+      year += 1;
+    }
+    const lastDayNextMonth = new Date(year, month + 1, 0).getDate();
+    candidateDay = Math.min(safeDay, lastDayNextMonth);
+    candidate = new Date(year, month, candidateDay);
+  }
+
+  return `${candidate.getFullYear()}-${String(candidate.getMonth() + 1).padStart(2, '0')}-${String(candidate.getDate()).padStart(2, '0')}`;
+}
+
+function extractCreateBillCandidate(
+  text: string
+): {
+  title: string;
+  amount: number;
+  dueDate: string;
+} | null {
+  const normalized = normalizeArabicText(text);
+
+  const hasBillWord =
+    normalized.includes('فاتوره');
+
+  const hasCreateWord =
+    normalized.includes('اضف') ||
+    normalized.includes('سجل') ||
+    normalized.includes('انشئ') ||
+    normalized.includes('اعمل');
+
+  const hasPaymentWord =
+    normalized.includes('دفعت') ||
+    normalized.includes('سددت') ||
+    normalized.includes('سداد');
+
+  if (!hasBillWord || !hasCreateWord || hasPaymentWord) {
+    return null;
+  }
+
+  const amountMatch = text.match(/(\d+(?:[.,]\d+)?)/);
+  if (!amountMatch) {
+    return null;
+  }
+
+  const amount = Number(amountMatch[1].replace(',', '.'));
+  if (!Number.isFinite(amount) || amount <= 0) {
+    return null;
+  }
+
+  const explicitDateMatch = text.match(/\b(20\d{2})-(\d{1,2})-(\d{1,2})\b/);
+  const dueDayMatch = text.match(/(?:يوم|بتاريخ|استحقاق|مستحق(?:ة)?(?:\s+يوم)?)\s*(\d{1,2})\b/i);
+
+  let dueDate: string;
+
+  if (explicitDateMatch) {
+    const year = Number(explicitDateMatch[1]);
+    const month = Math.max(1, Math.min(12, Number(explicitDateMatch[2])));
+    const day = Math.max(1, Math.min(31, Number(explicitDateMatch[3])));
+    const lastDay = new Date(year, month, 0).getDate();
+
+    dueDate = `${year}-${String(month).padStart(2, '0')}-${String(Math.min(day, lastDay)).padStart(2, '0')}`;
+  } else if (dueDayMatch) {
+    dueDate = buildDueDateFromDay(Number(dueDayMatch[1]));
+  } else {
+    dueDate = new Date().toISOString().split('T')[0];
+  }
+
+  let title = text
+    .replace(amountMatch[0], '')
+    .replace(/\b20\d{2}-\d{1,2}-\d{1,2}\b/g, '')
+    .replace(/(?:يوم|بتاريخ|استحقاق|مستحق(?:ة)?(?:\s+يوم)?)\s*\d{1,2}\b/gi, '')
+    .replace(/جنيه|جنية|جنيها|جنيهًا|ج\.م/gi, '')
+    .replace(/أضف|اضف|إضافة|اضافة|سجل|أنشئ|انشئ|اعمل/gi, '')
+    .replace(/فاتورة|فاتوره/gi, '')
+    .replace(/بقيمة|بقيمه|بمبلغ|قيمتها|مبلغها/gi, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (title.length < 2) {
+    title = 'فاتورة';
+  }
+
+  return {
+    title,
+    amount,
+    dueDate,
+  };
+}
+
+function extractBillPaymentCandidate(
+  text: string
+): {
+  searchText: string;
+  amount?: number;
+} | null {
+  const normalized = normalizeArabicText(text);
+
+  const hasPaymentIntent =
+    normalized.includes('دفعت') ||
+    normalized.includes('سددت') ||
+    normalized.includes('سداد');
+
+  const hasBillWord = normalized.includes('فاتوره');
+
+  if (!hasPaymentIntent || !hasBillWord) {
+    return null;
+  }
+
+  const amountMatch = text.match(/(\d+(?:[.,]\d+)?)/);
+  const amount = amountMatch
+    ? Number(amountMatch[1].replace(',', '.'))
+    : undefined;
+
+  let searchSource = text;
+
+  if (amountMatch) {
+    searchSource = searchSource.replace(amountMatch[0], '');
+  }
+
+  const searchText = normalizeArabicText(
+    searchSource
+      .replace(/جنيه|جنية|جنيها|جنيهًا|ج\.م/gi, '')
+      .replace(/دفعت|سددت|سداد|فاتورة|فاتوره|من/gi, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+  );
+
+  return {
+    searchText,
+    amount:
+      amount !== undefined && Number.isFinite(amount) && amount > 0
+        ? amount
+        : undefined,
+  };
+}
+
+// ============================================================
 // Create Recurring Obligation Parser
 // ============================================================
 
@@ -882,6 +1130,12 @@ ${formatMoney(context.safeToSpend || 0)} ج.م`;
 💳 سداد دين:
 دفعت 500 جنيه من دين CIB
 
+🧾 إضافة فاتورة:
+أضف فاتورة كهرباء 450 جنيه يوم 20
+
+🧾 سداد فاتورة:
+دفعت فاتورة الكهرباء
+
 📅 سداد التزام:
 دفعت 300 جنيه من التزام الإنترنت
 
@@ -908,11 +1162,156 @@ ${formatMoney(context.safeToSpend || 0)} ج.م`;
 💳 سداد دين:
 دفعت 500 جنيه من دين CIB
 
+🧾 إضافة فاتورة:
+أضف فاتورة كهرباء 450 جنيه يوم 20
+
+🧾 سداد فاتورة:
+دفعت فاتورة الكهرباء
+
 📅 سداد التزام:
 دفعت 300 جنيه من التزام الإنترنت
 
 ➕ إنشاء التزام متكرر:
 أضف التزام شهري نت 600 جنيه`;
+}
+
+
+// ============================================================
+// Gemini Natural-Language Bridge
+// ============================================================
+
+function getGeminiFrequencyArabic(
+  frequency?: 'WEEKLY' | 'MONTHLY' | 'QUARTERLY' | 'YEARLY'
+): string {
+  switch (frequency) {
+    case 'WEEKLY':
+      return 'اسبوعي';
+    case 'QUARTERLY':
+      return 'ربع سنوي';
+    case 'YEARLY':
+      return 'سنوي';
+    case 'MONTHLY':
+    default:
+      return 'شهري';
+  }
+}
+
+function buildCanonicalFinancialText(
+  interpretation: GeminiFinancialInterpretation,
+  originalText: string
+): string {
+  const amount =
+    interpretation.amount !== undefined
+      ? String(interpretation.amount)
+      : '';
+
+  const title =
+    String(
+      interpretation.title ||
+      interpretation.entityHint ||
+      ''
+    ).trim();
+
+  const entity =
+    String(
+      interpretation.entityHint ||
+      interpretation.title ||
+      ''
+    ).trim();
+
+  const wallet =
+    String(
+      interpretation.walletHint ||
+      ''
+    ).trim();
+
+  const destinationWallet =
+    String(
+      interpretation.destinationWalletHint ||
+      ''
+    ).trim();
+
+  const dueDay =
+    interpretation.dueDay !== undefined
+      ? ` يوم ${interpretation.dueDay}`
+      : '';
+
+  switch (interpretation.intent) {
+    case 'CREATE_EXPENSE':
+      if (!interpretation.amount) {
+        return originalText;
+      }
+
+      return `دفعت ${amount} جنيه ${title || 'مصروف'}${
+        wallet ? ` من ${wallet}` : ''
+      }`.trim();
+
+    case 'CREATE_INCOME':
+      if (!interpretation.amount) {
+        return originalText;
+      }
+
+      return `قبضت ${amount} جنيه ${title || 'دخل'}${
+        wallet ? ` على ${wallet}` : ''
+      }`.trim();
+
+    case 'CREATE_BILL':
+      if (!interpretation.amount) {
+        return originalText;
+      }
+
+      return `اضف فاتورة ${title || 'فاتورة'} ${amount} جنيه${dueDay}`.trim();
+
+    case 'PAY_BILL':
+      return `دفعت فاتورة ${entity || 'الفاتورة'}${
+        interpretation.amount ? ` ${amount} جنيه` : ''
+      }${wallet ? ` من ${wallet}` : ''}`.trim();
+
+    case 'CREATE_OBLIGATION':
+      if (!interpretation.amount) {
+        return originalText;
+      }
+
+      return `اضف التزام ${getGeminiFrequencyArabic(
+        interpretation.frequency
+      )} ${title || 'التزام'} ${amount} جنيه${dueDay}`.trim();
+
+    case 'PAY_OBLIGATION':
+      if (!interpretation.amount) {
+        return originalText;
+      }
+
+      return `دفعت ${amount} جنيه من التزام ${entity || 'الالتزام'}${
+        wallet ? ` من ${wallet}` : ''
+      }`.trim();
+
+    case 'PAY_DEBT':
+      if (!interpretation.amount) {
+        return originalText;
+      }
+
+      return `دفعت ${amount} جنيه من دين ${entity || 'الدين'}${
+        wallet ? ` من ${wallet}` : ''
+      }`.trim();
+
+    case 'TRANSFER':
+      if (
+        !interpretation.amount ||
+        !wallet ||
+        !destinationWallet
+      ) {
+        return originalText;
+      }
+
+      return `حولت ${amount} جنيه من ${wallet} الي ${destinationWallet}`.trim();
+
+    case 'FINANCIAL_QUERY':
+    case 'CREATE_GOAL':
+    case 'GOAL_CONTRIBUTION':
+    case 'UNKNOWN':
+    default:
+      return originalText;
+  }
 }
 
 // ============================================================
@@ -926,15 +1325,23 @@ router.post(
     res: Response
   ) => {
     try {
-      const update = req.body;
+      if (!verifyTelegramWebhookRequest(req, res)) {
+        return;
+      }
 
-      console.log(
-        'Telegram update received:',
-        JSON.stringify(update)
-      );
+      const update = req.body;
 
       const message =
         update?.message;
+
+      console.log('Telegram update received', {
+        updateId: update?.update_id ?? null,
+        updateType: message
+          ? 'message'
+          : update?.callback_query
+          ? 'callback_query'
+          : 'other',
+      });
 
       if (!message) {
         return res
@@ -1165,6 +1572,22 @@ ${code}
         );
 
       // ========================================================
+      // DEBUG - Verify latest Telegram router deployment
+      // ========================================================
+
+      if (normalized === 'billtest') {
+        await sendTelegramMessage(
+          chatId,
+          '✅ TELEGRAM V5 + GEMINI HYBRID شغال'
+        );
+
+        return res.status(200).json({
+          success: true,
+          received: true,
+        });
+      }
+
+      // ========================================================
       // Confirm Pending Action
       // ========================================================
 
@@ -1234,6 +1657,194 @@ ${code}
               success: true,
               received: true,
             });
+        }
+
+        // ======================================================
+        // Confirm Create Bill
+        // ======================================================
+
+        if (
+          pending.actionType ===
+          'create_bill'
+        ) {
+          const title = String(pending.billTitle || '').trim();
+          const amount = Number(pending.amount || 0);
+          const dueDate = String(pending.dueDate || '').trim();
+
+          const parsedBill = billCreateSchema.safeParse({
+            title,
+            titleAr: title,
+            biller: pending.biller || title,
+            amount,
+            dueDate,
+            isPaid: false,
+            paymentMethod: 'Cash',
+            icon: 'ReceiptText',
+            urgency: pending.urgency || 'medium',
+            notes: 'تم إنشاء الفاتورة من Telegram',
+          });
+
+          if (!parsedBill.success) {
+            console.error(
+              'Telegram create bill validation failed:',
+              parsedBill.error.format()
+            );
+
+            await pendingRef.delete();
+
+            await sendTelegramMessage(
+              chatId,
+              'تعذر إنشاء الفاتورة لأن بياناتها غير صالحة.'
+            );
+
+            return res.status(200).json({
+              success: true,
+              received: true,
+            });
+          }
+
+          const existingBills = await billRepository.getBills(linkedUserId);
+          const duplicate = existingBills.find((bill: any) =>
+            !bill.isPaid &&
+            normalizeArabicText(String(bill.titleAr || bill.title || '')) ===
+              normalizeArabicText(title) &&
+            Number(bill.amount || 0) === amount &&
+            String(bill.dueDate || '') === dueDate
+          );
+
+          if (duplicate) {
+            await pendingRef.delete();
+
+            await sendTelegramMessage(
+              chatId,
+              `⚠️ الفاتورة دي موجودة بالفعل وغير مدفوعة:\n\n🧾 ${title}\n💰 ${formatMoney(amount)} ج.م\n📅 ${dueDate}\n\nلم يتم إنشاء فاتورة مكررة.`
+            );
+
+            return res.status(200).json({
+              success: true,
+              received: true,
+            });
+          }
+
+          const createdBill = await billRepository.saveBill(
+            linkedUserId,
+            parsedBill.data as any
+          );
+
+          await markBudgetStale(linkedUserId);
+          await pendingRef.delete();
+
+          await sendTelegramMessage(
+            chatId,
+            `✅ تم إنشاء الفاتورة بنجاح.\n\n🧾 الفاتورة:\n${createdBill.titleAr || createdBill.title}\n\n💰 المبلغ:\n${formatMoney(createdBill.amount)} ج.م\n\n📅 تاريخ الاستحقاق:\n${createdBill.dueDate}\n\n⚠️ لم يتم خصم أي مبلغ من المحفظة لأن الفاتورة لم تُدفع بعد.\n\nرقم الفاتورة:\n${createdBill.id}`
+          );
+
+          return res.status(200).json({
+            success: true,
+            received: true,
+          });
+        }
+
+        // ======================================================
+        // Confirm Bill Payment
+        // ======================================================
+
+        if (
+          pending.actionType ===
+          'bill_payment'
+        ) {
+          const billId = String(pending.billId || '');
+          const walletId = String(pending.walletId || '');
+
+          if (!billId || !walletId) {
+            await pendingRef.delete();
+
+            await sendTelegramMessage(
+              chatId,
+              'تعذر سداد الفاتورة لأن بيانات العملية غير صالحة.'
+            );
+
+            return res.status(200).json({
+              success: true,
+              received: true,
+            });
+          }
+
+          const bills = await billRepository.getBills(linkedUserId);
+          const bill = bills.find((item: any) => item.id === billId);
+
+          if (!bill) {
+            await pendingRef.delete();
+            await sendTelegramMessage(chatId, '⚠️ الفاتورة لم تعد موجودة.');
+            return res.status(200).json({ success: true, received: true });
+          }
+
+          if (bill.isPaid) {
+            await pendingRef.delete();
+            await sendTelegramMessage(chatId, '✅ الفاتورة مدفوعة بالفعل.');
+            return res.status(200).json({ success: true, received: true });
+          }
+
+          const amount = Number(bill.amount || 0);
+
+          if (!Number.isFinite(amount) || amount <= 0) {
+            await pendingRef.delete();
+            await sendTelegramMessage(chatId, '⚠️ مبلغ الفاتورة غير صالح.');
+            return res.status(200).json({ success: true, received: true });
+          }
+
+          const transactionPayload = {
+            title: `سداد فاتورة ${bill.titleAr || bill.title}`,
+            amount,
+            currency: pending.walletCurrency || 'EGP',
+            type: 'expense' as const,
+            category: 'Bills & Subscriptions' as const,
+            walletId,
+            paymentMethod: 'Cash' as const,
+            date: new Date().toISOString().split('T')[0],
+            merchant: bill.biller || undefined,
+            notes: `تم سداد الفاتورة من Telegram - Bill ID: ${bill.id}`,
+            aiTag: 'telegram-bill-payment',
+          };
+
+          const validation = transactionCreateSchema.safeParse(transactionPayload);
+
+          if (!validation.success) {
+            console.error(
+              'Telegram bill payment validation failed:',
+              validation.error.format()
+            );
+
+            await pendingRef.delete();
+            await sendTelegramMessage(chatId, 'تعذر تسجيل سداد الفاتورة.');
+            return res.status(200).json({ success: true, received: true });
+          }
+
+          const transaction = await transactionRepository.createTransaction(
+            linkedUserId,
+            validation.data
+          );
+
+          const paidBill = await billRepository.payBill(linkedUserId, billId);
+
+          if (!paidBill) {
+            // The transaction has already been created at this point. This should
+            // only happen if the bill disappeared between the live read and write.
+            console.error('Bill disappeared after transaction creation:', billId);
+          }
+
+          await markBudgetStale(linkedUserId);
+          await pendingRef.delete();
+
+          await sendTelegramMessage(
+            chatId,
+            `✅ تم سداد الفاتورة بنجاح.\n\n🧾 الفاتورة:\n${bill.titleAr || bill.title}\n\n💰 المبلغ:\n${formatMoney(amount)} ج.م\n\n👛 تم الخصم من:\n${pending.walletName || 'المحفظة'}\n\n✅ تم تعليم الفاتورة كمدفوعة\n📊 وتم تحديث الميزانية\n\nرقم المعاملة:\n${transaction.id}`
+          );
+
+          return res.status(200).json({
+            success: true,
+            received: true,
+          });
         }
 
         // ======================================================
@@ -2014,13 +2625,909 @@ ${transaction.id}`
 
       if (text) {
         // ======================================================
-        // 1. Create Recurring Obligation FIRST
+        // Hybrid Financial Understanding V2
+        //
+        // 1) Fast deterministic router first.
+        // 2) If the message is not understood, Gemini interprets
+        //    natural Arabic/Egyptian language into a structured action.
+        // 3) Gemini never writes to Firestore. It only converts the
+        //    user's language into a canonical message that the existing
+        //    validated/safe execution pipeline can understand.
+        // ======================================================
+
+        const originalUserText = text;
+        let processingText = originalUserText;
+
+        let smartIntent: any =
+          routeFinancialIntent(processingText);
+
+        let geminiInterpretation:
+          GeminiFinancialInterpretation | null = null;
+
+        if (
+          smartIntent.intent === 'UNKNOWN'
+        ) {
+          geminiInterpretation =
+            await tryInterpretFinancialMessageWithGemini(
+              originalUserText
+            );
+
+          if (geminiInterpretation) {
+            console.log(
+              'Telegram Gemini interpretation:',
+              JSON.stringify(geminiInterpretation)
+            );
+
+            if (
+              geminiInterpretation.requiresClarification
+            ) {
+              await sendTelegramMessage(
+                chatId,
+                geminiInterpretation.clarificationQuestion ||
+                  'محتاج تفاصيل أكتر علشان أفهم العملية بشكل آمن.'
+              );
+
+              return res.status(200).json({
+                success: true,
+                received: true,
+              });
+            }
+
+            if (
+              geminiInterpretation.confidence >= 0.70
+            ) {
+              // Features understood by Gemini but not yet connected
+              // to the Telegram execution pipeline.
+              if (
+                geminiInterpretation.intent === 'CREATE_GOAL' ||
+                geminiInterpretation.intent === 'GOAL_CONTRIBUTION'
+              ) {
+                await sendTelegramMessage(
+                  chatId,
+                  `🎯 فهمت إن طلبك متعلق بهدف ادخار، لكن تنفيذ الأهداف من Telegram لسه مش مربوط بالتنفيذ الآمن.
+
+تقدر تستخدم قسم الأهداف داخل Mizaniya AI حاليًا.`
+                );
+
+                return res.status(200).json({
+                  success: true,
+                  received: true,
+                });
+              }
+
+              if (
+                geminiInterpretation.intent === 'TRANSFER'
+              ) {
+                await sendTelegramMessage(
+                  chatId,
+                  `🔄 فهمت إنك عايز تعمل تحويل بين محافظك.
+
+ميزة التحويل من Telegram لسه مش مربوطة بالتنفيذ الآمن، ومش هنحرك أي رصيد من غير مسار تأكيد كامل.`
+                );
+
+                return res.status(200).json({
+                  success: true,
+                  received: true,
+                });
+              }
+
+              processingText =
+                buildCanonicalFinancialText(
+                  geminiInterpretation,
+                  originalUserText
+                );
+
+              smartIntent =
+                routeFinancialIntent(
+                  processingText
+                );
+
+              // FINANCIAL_QUERY can remain natural text because
+              // the read-only query handler below reads the original.
+              if (
+                geminiInterpretation.intent ===
+                  'FINANCIAL_QUERY' &&
+                smartIntent.intent ===
+                  'UNKNOWN'
+              ) {
+                smartIntent = {
+                  intent:
+                    'FINANCIAL_QUERY',
+                  confidence:
+                    geminiInterpretation.confidence,
+                  originalText:
+                    originalUserText,
+                };
+              }
+
+              console.log(
+                'Telegram Gemini canonical text:',
+                processingText
+              );
+            }
+          }
+        }
+
+        let billPaymentFallsBackToExpense = false;
+
+        console.log(
+          'Telegram financial intent:',
+          JSON.stringify(smartIntent)
+        );
+
+        // ======================================================
+        // 1. Create Bill FIRST
+        // ======================================================
+
+        const createBillCandidate =
+          smartIntent.intent === 'CREATE_BILL'
+            ? extractCreateBillCandidate(processingText)
+            : null;
+
+        if (createBillCandidate) {
+          const now = Date.now();
+
+          await db
+            .collection('telegram_pending_transactions')
+            .doc(String(telegramUserId))
+            .set({
+              userId: linkedUserId,
+              telegramUserId,
+              chatId,
+              actionType: 'create_bill',
+              billTitle: createBillCandidate.title,
+              biller: createBillCandidate.title,
+              amount: createBillCandidate.amount,
+              dueDate: createBillCandidate.dueDate,
+              urgency: 'medium',
+              used: false,
+              createdAt: now,
+              expiresAt:
+                now +
+                PENDING_TX_EXPIRY_MINUTES * 60 * 1000,
+            });
+
+          await sendTelegramMessage(
+            chatId,
+            `🧾 فاتورة جديدة جاهزة للإضافة:\n\n📌 الفاتورة:\n${createBillCandidate.title}\n\n💰 المبلغ:\n${formatMoney(createBillCandidate.amount)} ج.م\n\n📅 تاريخ الاستحقاق:\n${createBillCandidate.dueDate}\n\n⚠️ إنشاء الفاتورة لا يخصم أي مبلغ من المحفظة.\n\nهل تريد إنشاء الفاتورة؟\n\nاكتب:\nتأكيد\n\nأو:\nإلغاء`
+          );
+
+          return res.status(200).json({
+            success: true,
+            received: true,
+          });
+        }
+
+        // ======================================================
+        // 2. Bill Payment
+        // ======================================================
+
+        const billPaymentCandidate =
+          smartIntent.intent === 'PAY_BILL'
+            ? extractBillPaymentCandidate(processingText)
+            : null;
+
+        if (billPaymentCandidate) {
+          const bills = await billRepository.getBills(linkedUserId);
+          const unpaidBills = bills.filter((bill: any) => !bill.isPaid);
+
+          const matchingBills = unpaidBills.filter((bill: any) => {
+            const title = normalizeArabicText(
+              String(bill.titleAr || bill.title || '')
+            );
+            const biller = normalizeArabicText(String(bill.biller || ''));
+            const search = billPaymentCandidate.searchText;
+
+            if (!search) {
+              return unpaidBills.length === 1;
+            }
+
+            return (
+              title.includes(search) ||
+              search.includes(title) ||
+              biller.includes(search) ||
+              (biller && search.includes(biller))
+            );
+          });
+
+          // If the user said "دفعت فاتورة ..." but there is no stored Bill,
+          // preserve the old safe behavior and treat it as a normal expense.
+          billPaymentFallsBackToExpense = matchingBills.length === 0;
+
+          // No matching stored bill: let normal expense handling continue.
+          if (matchingBills.length === 1) {
+            const selectedBill: any = matchingBills[0];
+            const billAmount = Number(selectedBill.amount || 0);
+
+            if (
+              billPaymentCandidate.amount !== undefined &&
+              Math.abs(billPaymentCandidate.amount - billAmount) > 0.01
+            ) {
+              await sendTelegramMessage(
+                chatId,
+                `⚠️ المبلغ اللي كتبته مختلف عن قيمة الفاتورة المسجلة.\n\n🧾 الفاتورة:\n${selectedBill.titleAr || selectedBill.title}\n\n💰 القيمة المسجلة:\n${formatMoney(billAmount)} ج.م\n\n💵 المبلغ المكتوب:\n${formatMoney(billPaymentCandidate.amount)} ج.م\n\nلو عايز تسدد الفاتورة المسجلة ابعت:\nدفعت فاتورة ${selectedBill.titleAr || selectedBill.title}`
+              );
+
+              return res.status(200).json({
+                success: true,
+                received: true,
+              });
+            }
+
+            const walletMatch = await matchWalletForUser(
+              linkedUserId,
+              processingText || ''
+            );
+
+            if (walletMatch.ambiguous) {
+              const walletNames = walletMatch.wallets
+                .map((item: any) => item.nameAr || item.name || item.id)
+                .join('، ');
+
+              await sendTelegramMessage(
+                chatId,
+                `👛 لقيت أكتر من محفظة ممكن تقصدها:
+
+${walletNames}
+
+حدد المحفظة بالاسم وابعت العملية من جديد.`
+              );
+
+              return res.status(200).json({
+                success: true,
+                received: true,
+              });
+            }
+
+            if (hasExplicitWalletReference(processingText || '') && !walletMatch.wallet) {
+              await sendTelegramMessage(
+                chatId,
+                `⚠️ مش لاقي المحفظة اللي ذكرتها: ${walletMatch.searchText || 'غير معروفة'}
+
+اكتب اسم المحفظة زي ما هو مسجل في Mizaniya AI.`
+              );
+
+              return res.status(200).json({
+                success: true,
+                received: true,
+              });
+            }
+
+            const wallet = walletMatch.wallet;
+
+            if (!wallet) {
+              await sendTelegramMessage(
+                chatId,
+                '⚠️ مفيش محفظة متاحة في حسابك. أنشئ محفظة من Mizaniya AI الأول.'
+              );
+              return res.status(200).json({ success: true, received: true });
+            }
+
+            const now = Date.now();
+
+            await db
+              .collection('telegram_pending_transactions')
+              .doc(String(telegramUserId))
+              .set({
+                userId: linkedUserId,
+                telegramUserId,
+                chatId,
+                actionType: 'bill_payment',
+                billId: selectedBill.id,
+                billTitle: selectedBill.titleAr || selectedBill.title,
+                amount: billAmount,
+                walletId: wallet.id,
+                walletName: wallet.nameAr || wallet.name,
+                walletCurrency: wallet.currency || 'EGP',
+                used: false,
+                createdAt: now,
+                expiresAt:
+                  now +
+                  PENDING_TX_EXPIRY_MINUTES * 60 * 1000,
+              });
+
+            await sendTelegramMessage(
+              chatId,
+              `🧾 سداد فاتورة جاهز للتأكيد:\n\n📌 الفاتورة:\n${selectedBill.titleAr || selectedBill.title}\n\n💰 المبلغ:\n${formatMoney(billAmount)} ج.م\n\n📅 الاستحقاق:\n${selectedBill.dueDate || '-'}\n\n👛 المحفظة:\n${wallet.nameAr || wallet.name}\n\nبعد التأكيد سيتم:\n✅ تسجيل المصروف\n✅ خصم المبلغ من المحفظة\n✅ تعليم الفاتورة كمدفوعة\n✅ تحديث الميزانية\n\nاكتب:\nتأكيد\n\nأو:\nإلغاء`
+            );
+
+            return res.status(200).json({
+              success: true,
+              received: true,
+            });
+          }
+
+          if (matchingBills.length > 1) {
+            const list = matchingBills
+              .map(
+                (bill: any, index: number) =>
+                  `${index + 1}. ${bill.titleAr || bill.title} — ${formatMoney(Number(bill.amount || 0))} ج.م — ${bill.dueDate || '-'}`
+              )
+              .join('\n');
+
+            await sendTelegramMessage(
+              chatId,
+              `🧾 لقيت أكتر من فاتورة غير مدفوعة مطابقة:\n\n${list}\n\nاكتب اسم الفاتورة بشكل أوضح.`
+            );
+
+            return res.status(200).json({
+              success: true,
+              received: true,
+            });
+          }
+        }
+
+        // ======================================================
+        // Contextual Matching V2
+        // Handles natural phrases such as: "دفعت النت 600"
+        // before they fall through to a normal expense.
+        // ======================================================
+
+        if (
+          smartIntent.intent === 'CREATE_EXPENSE' &&
+          Number(smartIntent.amount || 0) > 0
+        ) {
+          const contextualMatch =
+            await matchFinancialContext(
+              linkedUserId,
+              processingText
+            );
+
+          console.log(
+            'Telegram contextual match:',
+            JSON.stringify({
+              type: contextualMatch.type,
+              confidence: contextualMatch.confidence,
+              billId: contextualMatch.bill?.id,
+              obligationId: contextualMatch.obligation?.id,
+            })
+          );
+
+          // ------------------------------------------------------
+          // Ambiguous: both a Bill and an Obligation match.
+          // Never guess which one the user meant.
+          // ------------------------------------------------------
+
+          if (
+            contextualMatch.type === 'AMBIGUOUS'
+          ) {
+            const bill = contextualMatch.bill;
+            const obligation =
+              contextualMatch.obligation;
+
+            await sendTelegramMessage(
+              chatId,
+              `⚠️ لقيت أكتر من حاجة مرتبطة بالرسالة دي ومش هختار من نفسي.
+
+${
+                bill
+                  ? `🧾 فاتورة: ${
+                      bill.titleAr ||
+                      bill.title ||
+                      'فاتورة'
+                    } — ${formatMoney(
+                      Number(
+                        bill.amount || 0
+                      )
+                    )} ج.م\n`
+                  : ''
+              }${
+                obligation
+                  ? `📅 التزام: ${
+                      obligation.name ||
+                      'التزام'
+                    } — ${formatMoney(
+                      Number(
+                        obligation.amount ||
+                          0
+                      )
+                    )} ج.م\n`
+                  : ''
+              }
+اكتب بشكل أوضح، مثلًا:
+
+دفعت فاتورة النت
+
+أو:
+
+دفعت 600 جنيه من التزام النت`
+            );
+
+            return res
+              .status(200)
+              .json({
+                success: true,
+                received: true,
+              });
+          }
+
+          // ------------------------------------------------------
+          // Natural-language Bill Payment
+          // Example: "دفعت النت 600"
+          // ------------------------------------------------------
+
+          if (
+            contextualMatch.type === 'BILL' &&
+            contextualMatch.bill &&
+            contextualMatch.confidence >= 0.55
+          ) {
+            const selectedBill: any =
+              contextualMatch.bill;
+
+            const billAmount = Number(
+              selectedBill.amount || 0
+            );
+
+            const typedAmount = Number(
+              smartIntent.amount || 0
+            );
+
+            if (
+              !Number.isFinite(billAmount) ||
+              billAmount <= 0
+            ) {
+              await sendTelegramMessage(
+                chatId,
+                '⚠️ الفاتورة المطابقة موجودة لكن مبلغها غير صالح.'
+              );
+
+              return res
+                .status(200)
+                .json({
+                  success: true,
+                  received: true,
+                });
+            }
+
+            if (
+              Math.abs(
+                typedAmount - billAmount
+              ) > 0.01
+            ) {
+              await sendTelegramMessage(
+                chatId,
+                `⚠️ لقيت فاتورة مطابقة، لكن المبلغ اللي كتبته مختلف عن قيمتها.
+
+🧾 الفاتورة:
+${
+  selectedBill.titleAr ||
+  selectedBill.title ||
+  'فاتورة'
+}
+
+💰 القيمة المسجلة:
+${formatMoney(billAmount)} ج.م
+
+💵 المبلغ اللي كتبته:
+${formatMoney(typedAmount)} ج.م
+
+لو تقصد سداد الفاتورة المسجلة ابعت:
+دفعت فاتورة ${
+  selectedBill.titleAr ||
+  selectedBill.title ||
+  ''
+}`
+              );
+
+              return res
+                .status(200)
+                .json({
+                  success: true,
+                  received: true,
+                });
+            }
+
+            const walletMatch = await matchWalletForUser(
+              linkedUserId,
+              processingText || ''
+            );
+
+            if (walletMatch.ambiguous) {
+              const walletNames = walletMatch.wallets
+                .map((item: any) => item.nameAr || item.name || item.id)
+                .join('، ');
+
+              await sendTelegramMessage(
+                chatId,
+                `👛 لقيت أكتر من محفظة ممكن تقصدها:
+
+${walletNames}
+
+حدد المحفظة بالاسم وابعت العملية من جديد.`
+              );
+
+              return res.status(200).json({
+                success: true,
+                received: true,
+              });
+            }
+
+            if (hasExplicitWalletReference(processingText || '') && !walletMatch.wallet) {
+              await sendTelegramMessage(
+                chatId,
+                `⚠️ مش لاقي المحفظة اللي ذكرتها: ${walletMatch.searchText || 'غير معروفة'}
+
+اكتب اسم المحفظة زي ما هو مسجل في Mizaniya AI.`
+              );
+
+              return res.status(200).json({
+                success: true,
+                received: true,
+              });
+            }
+
+            const wallet = walletMatch.wallet;
+
+            if (!wallet) {
+              await sendTelegramMessage(
+                chatId,
+                '⚠️ مفيش محفظة متاحة في حسابك. أنشئ محفظة من Mizaniya AI الأول.'
+              );
+
+              return res
+                .status(200)
+                .json({
+                  success: true,
+                  received: true,
+                });
+            }
+
+            const now = Date.now();
+
+            await db
+              .collection(
+                'telegram_pending_transactions'
+              )
+              .doc(
+                String(telegramUserId)
+              )
+              .set({
+                userId: linkedUserId,
+                telegramUserId,
+                chatId,
+                actionType:
+                  'bill_payment',
+                billId:
+                  selectedBill.id,
+                billTitle:
+                  selectedBill.titleAr ||
+                  selectedBill.title,
+                amount: billAmount,
+                walletId: wallet.id,
+                walletName:
+                  wallet.nameAr ||
+                  wallet.name,
+                walletCurrency:
+                  wallet.currency ||
+                  'EGP',
+                used: false,
+                createdAt: now,
+                expiresAt:
+                  now +
+                  PENDING_TX_EXPIRY_MINUTES *
+                    60 *
+                    1000,
+              });
+
+            await sendTelegramMessage(
+              chatId,
+              `🧠 فهمت إنك غالبًا تقصد سداد فاتورة موجودة عندك.
+
+🧾 الفاتورة:
+${
+  selectedBill.titleAr ||
+  selectedBill.title
+}
+
+💰 المبلغ:
+${formatMoney(billAmount)} ج.م
+
+👛 المحفظة:
+${wallet.nameAr || wallet.name}
+
+بعد التأكيد سيتم:
+✅ تسجيل المصروف
+✅ خصم المبلغ من المحفظة
+✅ تعليم الفاتورة كمدفوعة
+✅ تحديث الميزانية
+
+اكتب:
+تأكيد
+
+أو:
+إلغاء`
+            );
+
+            return res
+              .status(200)
+              .json({
+                success: true,
+                received: true,
+              });
+          }
+
+          // ------------------------------------------------------
+          // Natural-language Obligation Payment
+          // Example: "دفعت النت 600"
+          // ------------------------------------------------------
+
+          if (
+            contextualMatch.type ===
+              'OBLIGATION' &&
+            contextualMatch.obligation &&
+            contextualMatch.confidence >= 0.55
+          ) {
+            const selectedObligation: any =
+              contextualMatch.obligation;
+
+            const amount = Number(
+              smartIntent.amount || 0
+            );
+
+            const context =
+              await getTrustedFinancialContext(
+                linkedUserId
+              );
+
+            const monthKey =
+              new Date()
+                .toISOString()
+                .slice(0, 7);
+
+            const dueInfo =
+              getObligationAmountDueForMonth(
+                selectedObligation,
+                monthKey
+              );
+
+            const dueThisMonth = Number(
+              dueInfo.amount || 0
+            );
+
+            if (dueThisMonth <= 0) {
+              await sendTelegramMessage(
+                chatId,
+                `📅 لقيت التزام "${
+                  selectedObligation.name ||
+                  'التزام'
+                }"، لكنه غير مستحق خلال الشهر الحالي.`
+              );
+
+              return res
+                .status(200)
+                .json({
+                  success: true,
+                  received: true,
+                });
+            }
+
+            const paidThisMonth =
+              context.recentTransactions
+                .filter(
+                  (tx) =>
+                    tx.type ===
+                      'expense' &&
+                    tx.relatedObligationId ===
+                      selectedObligation.id &&
+                    String(
+                      tx.date || ''
+                    ).startsWith(
+                      monthKey
+                    )
+                )
+                .reduce(
+                  (sum, tx) =>
+                    sum +
+                    Number(
+                      tx.amount || 0
+                    ),
+                  0
+                );
+
+            const remainingThisMonth =
+              Math.max(
+                0,
+                dueThisMonth -
+                  paidThisMonth
+              );
+
+            if (
+              remainingThisMonth <= 0
+            ) {
+              await sendTelegramMessage(
+                chatId,
+                `✅ الالتزام "${
+                  selectedObligation.name ||
+                  'التزام'
+                }" مدفوع بالكامل للشهر الحالي.`
+              );
+
+              return res
+                .status(200)
+                .json({
+                  success: true,
+                  received: true,
+                });
+            }
+
+            if (
+              amount > remainingThisMonth
+            ) {
+              await sendTelegramMessage(
+                chatId,
+                `⚠️ فهمت إن الرسالة مرتبطة بالتزام "${
+                  selectedObligation.name ||
+                  'التزام'
+                }"، لكن مبلغ السداد أكبر من المتبقي لهذا الشهر.
+
+💰 المتبقي:
+${formatMoney(
+  remainingThisMonth
+)} ج.م
+
+💵 المبلغ المكتوب:
+${formatMoney(amount)} ج.م`
+              );
+
+              return res
+                .status(200)
+                .json({
+                  success: true,
+                  received: true,
+                });
+            }
+
+            const walletMatch = await matchWalletForUser(
+              linkedUserId,
+              processingText || ''
+            );
+
+            if (walletMatch.ambiguous) {
+              const walletNames = walletMatch.wallets
+                .map((item: any) => item.nameAr || item.name || item.id)
+                .join('، ');
+
+              await sendTelegramMessage(
+                chatId,
+                `👛 لقيت أكتر من محفظة ممكن تقصدها:
+
+${walletNames}
+
+حدد المحفظة بالاسم وابعت العملية من جديد.`
+              );
+
+              return res.status(200).json({
+                success: true,
+                received: true,
+              });
+            }
+
+            if (hasExplicitWalletReference(processingText || '') && !walletMatch.wallet) {
+              await sendTelegramMessage(
+                chatId,
+                `⚠️ مش لاقي المحفظة اللي ذكرتها: ${walletMatch.searchText || 'غير معروفة'}
+
+اكتب اسم المحفظة زي ما هو مسجل في Mizaniya AI.`
+              );
+
+              return res.status(200).json({
+                success: true,
+                received: true,
+              });
+            }
+
+            const wallet = walletMatch.wallet;
+
+            if (!wallet) {
+              await sendTelegramMessage(
+                chatId,
+                `⚠️ مفيش محفظة متاحة في حسابك.
+
+أنشئ محفظة من Mizaniya AI الأول.`
+              );
+
+              return res
+                .status(200)
+                .json({
+                  success: true,
+                  received: true,
+                });
+            }
+
+            const now = Date.now();
+
+            await db
+              .collection(
+                'telegram_pending_transactions'
+              )
+              .doc(
+                String(telegramUserId)
+              )
+              .set({
+                userId: linkedUserId,
+                telegramUserId,
+                chatId,
+                actionType:
+                  'obligation_payment',
+                obligationId:
+                  selectedObligation.id,
+                obligationName:
+                  selectedObligation.name,
+                amount,
+                dueThisMonth,
+                paidThisMonth,
+                remainingBefore:
+                  remainingThisMonth,
+                walletId: wallet.id,
+                walletName:
+                  wallet.nameAr ||
+                  wallet.name,
+                walletCurrency:
+                  wallet.currency ||
+                  'EGP',
+                used: false,
+                createdAt: now,
+                expiresAt:
+                  now +
+                  PENDING_TX_EXPIRY_MINUTES *
+                    60 *
+                    1000,
+              });
+
+            await sendTelegramMessage(
+              chatId,
+              `🧠 لقيت التزام متكرر مطابق للرسالة دي.
+
+📅 الالتزام:
+${selectedObligation.name}
+
+💰 مبلغ السداد:
+${formatMoney(amount)} ج.م
+
+📉 المتبقي قبل السداد:
+${formatMoney(
+  remainingThisMonth
+)} ج.م
+
+✅ المتبقي بعد السداد:
+${formatMoney(
+  Math.max(
+    0,
+    remainingThisMonth - amount
+  )
+)} ج.م
+
+👛 المحفظة:
+${wallet.nameAr || wallet.name}
+
+هل تريد تسجيله كسداد للالتزام؟
+
+اكتب:
+تأكيد
+
+أو:
+إلغاء`
+            );
+
+            return res
+              .status(200)
+              .json({
+                success: true,
+                received: true,
+              });
+          }
+        }
+
+        // ======================================================
+        // 3. Create Recurring Obligation
         // ======================================================
 
         const createObligationCandidate =
-          extractCreateObligationCandidate(
-            text
-          );
+          smartIntent.intent === 'CREATE_OBLIGATION'
+            ? extractCreateObligationCandidate(
+                text
+              )
+            : null;
 
         if (createObligationCandidate) {
           const now = Date.now();
@@ -2121,9 +3628,11 @@ ${getArabicCategoryName(category)}
         // ======================================================
 
         const obligationPaymentCandidate =
-          extractObligationPaymentCandidate(
-            text
-          );
+          smartIntent.intent === 'PAY_OBLIGATION'
+            ? extractObligationPaymentCandidate(
+                text
+              )
+            : null;
 
         if (
           obligationPaymentCandidate
@@ -2361,10 +3870,46 @@ ${formatMoney(
               });
           }
 
-          const wallet =
-            await getPrimaryWallet(
-              linkedUserId
+          const walletMatch = await matchWalletForUser(
+              linkedUserId,
+              processingText || ''
             );
+
+            if (walletMatch.ambiguous) {
+              const walletNames = walletMatch.wallets
+                .map((item: any) => item.nameAr || item.name || item.id)
+                .join('، ');
+
+              await sendTelegramMessage(
+                chatId,
+                `👛 لقيت أكتر من محفظة ممكن تقصدها:
+
+${walletNames}
+
+حدد المحفظة بالاسم وابعت العملية من جديد.`
+              );
+
+              return res.status(200).json({
+                success: true,
+                received: true,
+              });
+            }
+
+            if (hasExplicitWalletReference(processingText || '') && !walletMatch.wallet) {
+              await sendTelegramMessage(
+                chatId,
+                `⚠️ مش لاقي المحفظة اللي ذكرتها: ${walletMatch.searchText || 'غير معروفة'}
+
+اكتب اسم المحفظة زي ما هو مسجل في Mizaniya AI.`
+              );
+
+              return res.status(200).json({
+                success: true,
+                received: true,
+              });
+            }
+
+            const wallet = walletMatch.wallet;
 
           if (!wallet) {
             await sendTelegramMessage(
@@ -2495,9 +4040,11 @@ ${wallet.nameAr || wallet.name}
         // ======================================================
 
         const debtPaymentCandidate =
-          extractDebtPaymentCandidate(
-            text
-          );
+          smartIntent.intent === 'PAY_DEBT'
+            ? extractDebtPaymentCandidate(
+                text
+              )
+            : null;
 
         if (
           debtPaymentCandidate
@@ -2774,15 +4321,53 @@ ${formatMoney(
         // ======================================================
 
         const incomeCandidate =
-          extractIncomeCandidate(
-            text
-          );
+          smartIntent.intent === 'CREATE_INCOME'
+            ? extractIncomeCandidate(
+                processingText
+              )
+            : null;
 
         if (incomeCandidate) {
-          const wallet =
-            await getPrimaryWallet(
-              linkedUserId
+          const walletMatch = await matchWalletForUser(
+              linkedUserId,
+              processingText || ''
             );
+
+            if (walletMatch.ambiguous) {
+              const walletNames = walletMatch.wallets
+                .map((item: any) => item.nameAr || item.name || item.id)
+                .join('، ');
+
+              await sendTelegramMessage(
+                chatId,
+                `👛 لقيت أكتر من محفظة ممكن تقصدها:
+
+${walletNames}
+
+حدد المحفظة بالاسم وابعت العملية من جديد.`
+              );
+
+              return res.status(200).json({
+                success: true,
+                received: true,
+              });
+            }
+
+            if (hasExplicitWalletReference(processingText || '') && !walletMatch.wallet) {
+              await sendTelegramMessage(
+                chatId,
+                `⚠️ مش لاقي المحفظة اللي ذكرتها: ${walletMatch.searchText || 'غير معروفة'}
+
+اكتب اسم المحفظة زي ما هو مسجل في Mizaniya AI.`
+              );
+
+              return res.status(200).json({
+                success: true,
+                received: true,
+              });
+            }
+
+            const wallet = walletMatch.wallet;
 
           if (!wallet) {
             await sendTelegramMessage(
@@ -2940,15 +4525,54 @@ ${wallet.nameAr || wallet.name}
         // ======================================================
 
         const expenseCandidate =
-          extractExpenseCandidate(
-            text
-          );
+          smartIntent.intent === 'CREATE_EXPENSE' ||
+          billPaymentFallsBackToExpense
+            ? extractExpenseCandidate(
+                processingText
+              )
+            : null;
 
         if (expenseCandidate) {
-          const wallet =
-            await getPrimaryWallet(
-              linkedUserId
+          const walletMatch = await matchWalletForUser(
+              linkedUserId,
+              processingText || ''
             );
+
+            if (walletMatch.ambiguous) {
+              const walletNames = walletMatch.wallets
+                .map((item: any) => item.nameAr || item.name || item.id)
+                .join('، ');
+
+              await sendTelegramMessage(
+                chatId,
+                `👛 لقيت أكتر من محفظة ممكن تقصدها:
+
+${walletNames}
+
+حدد المحفظة بالاسم وابعت العملية من جديد.`
+              );
+
+              return res.status(200).json({
+                success: true,
+                received: true,
+              });
+            }
+
+            if (hasExplicitWalletReference(processingText || '') && !walletMatch.wallet) {
+              await sendTelegramMessage(
+                chatId,
+                `⚠️ مش لاقي المحفظة اللي ذكرتها: ${walletMatch.searchText || 'غير معروفة'}
+
+اكتب اسم المحفظة زي ما هو مسجل في Mizaniya AI.`
+              );
+
+              return res.status(200).json({
+                success: true,
+                received: true,
+              });
+            }
+
+            const wallet = walletMatch.wallet;
 
           if (!wallet) {
             await sendTelegramMessage(
@@ -3148,6 +4772,8 @@ ${wallet.nameAr || wallet.name}
 
 router.post(
   '/setup',
+  authMiddleware as any,
+  requireAdmin as any,
   async (
     _req: Request,
     res: Response
@@ -3167,7 +4793,31 @@ router.post(
           });
       }
 
+      const webhookSecret =
+        getTelegramWebhookSecret();
+
+      if (!webhookSecret) {
+        return res
+          .status(500)
+          .json({
+            success: false,
+            error:
+              'TELEGRAM_WEBHOOK_SECRET is not configured',
+          });
+      }
+
+      if (!isValidTelegramWebhookSecret(webhookSecret)) {
+        return res
+          .status(500)
+          .json({
+            success: false,
+            error:
+              'TELEGRAM_WEBHOOK_SECRET must be 1-256 characters using only A-Z, a-z, 0-9, _ and -',
+          });
+      }
+
       const webhookUrl =
+        process.env.TELEGRAM_WEBHOOK_URL ||
         'https://mizaniyaai.online/telegram/webhook';
 
       const telegramResponse =
@@ -3191,6 +4841,9 @@ router.post(
                 'message',
                 'callback_query',
               ],
+
+              secret_token:
+                webhookSecret,
             }),
           }
         );
@@ -3236,6 +4889,8 @@ router.post(
 
 router.get(
   '/info',
+  authMiddleware as any,
+  requireAdmin as any,
   async (
     _req: Request,
     res: Response
