@@ -74,6 +74,9 @@ export class TransactionRepository {
         if (!destWalletRef || !destWalletDoc) {
           throw new Error('Transfer requires a valid destination wallet.');
         }
+        if (sourceBalance < Number(tx.amount || 0)) {
+          throw new Error('رصيد محفظة المصدر غير كافٍ لإتمام التحويل.');
+        }
         const destBalance = Number(destWalletDoc.data()?.balance || 0);
         transaction.update(sourceWalletRef, { balance: sourceBalance - tx.amount });
         transaction.update(destWalletRef, { balance: destBalance + tx.amount });

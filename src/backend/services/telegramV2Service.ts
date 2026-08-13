@@ -830,7 +830,8 @@ async function handleReadQueries(input: HandlerInput): Promise<HandlerResult> {
     return { handled: true };
   }
 
-  if (/اقدر اصرف كام النهارده|اصرف كام النهارده/.test(n)) {
+  // Safe-to-spend aliases: answer the user's total available amount, not only the daily allowance.
+  if (/اقدر اصرف كام النهارده|اصرف كام النهارده|المتاح ليا اصرفه كام|المتاح اصرفه كام|فاضل اصرف كام|فاضلي اصرف كام|اقدر اصرف كام$/.test(n)) {
     const context = await getTrustedFinancialContext(userId);
     const safe = Number(context.safeToSpend || 0);
     const day = Number(today.slice(8, 10));
@@ -841,18 +842,42 @@ async function handleReadQueries(input: HandlerInput): Promise<HandlerResult> {
     return { handled: true };
   }
 
-  if (/فلوسي هتكفيني|يكفيني لاخر الشهر|متوقع يتبقي|متوقع يتبقى/.test(n)) {
+  // Month-end forecast. This is deliberately separate from the current-wallet-balance query.
+  if (/فلوسي هتكفيني|يكفيني لاخر الشهر|متوقع يتبقي|متوقع يتبقى|توقع رصيدي اخر الشهر|رصيدي اخر الشهر|هيتبقي معايا كام اخر الشهر|هيتبقى معايا كام اخر الشهر/.test(n)) {
     const context = await getTrustedFinancialContext(userId);
     const txs = (await loadTransactions(userId)).filter((tx) => tx.type === 'expense' && String(tx.date || '').startsWith(monthKey));
     const spent = txs.reduce((s, tx) => s + Number(tx.amount || 0), 0);
     const day = Math.max(1, Number(today.slice(8, 10)));
     const [y, m] = monthKey.split('-').map(Number);
     const days = new Date(y, m, 0).getDate();
-    const projectedExpenses = (spent / day) * days;
-    const income = Number(context.salary || 0);
-    const commitments = Number(context.outstandingMonthlyCommitments || 0);
-    const projected = income - projectedExpenses - commitments;
-    await sendMessage(chatId, `🔮 توقع نهاية الشهر (بناءً على معدل صرفك الحالي):\n\n💵 دخل مسجل: ${formatMoney(income)} ج.م\n💸 مصروف متوقع: ${formatMoney(projectedExpenses)} ج.م\n📌 التزامات متبقية: ${formatMoney(commitments)} ج.م\n💰 متوقع يتبقى: ${formatMoney(projected)} ج.م\n\n${projected >= 0 ? '✅ بالمعدل الحالي، الوضع قابل للاستمرار.' : '⚠️ بالمعدل الحالي قد يحصل عجز قبل نهاية الشهر.'}`);
+    const remainingDays = Math.max(0, days - day);
+    const dailyBurn = spent / day;
+    const projectedRemainingFlexibleSpend = dailyBurn * remainingDays;
+    const commitments = Number(context.outstandingMonthlyCommitments || 0) + Number(context.unpaidBillsThisMonthTotal || 0);
+    const currentWalletBalance = (context.wallets || []).filter((w: any) => (w.currency || 'EGP') === 'EGP').reduce((sum: number, w: any) => sum + Number(w.balance || 0), 0);
+    const projectedWalletBalance = currentWalletBalance - projectedRemainingFlexibleSpend - commitments;
+    const budgetProjection = Number((context.currentBudget as any)?.projectedEndOfMonthBalance ?? (context.currentBudget as any)?.projectedMonthEndBalance);
+    const hasBudgetProjection = Number.isFinite(budgetProjection);
+    await sendMessage(chatId, `🔮 توقع رصيدك آخر الشهر:\n\n👛 رصيد المحافظ الحالي: ${formatMoney(currentWalletBalance)} ج.م\n📉 صرف متوقع لباقي الشهر: ${formatMoney(projectedRemainingFlexibleSpend)} ج.م\n📌 فواتير والتزامات متبقية: ${formatMoney(commitments)} ج.م\n💰 الرصيد المتوقع: ${formatMoney(projectedWalletBalance)} ج.م${hasBudgetProjection ? `\n📊 توقع الميزانية المحفوظ: ${formatMoney(budgetProjection)} ج.م` : ''}\n\n${projectedWalletBalance >= 0 ? '✅ بالمعدل الحالي، رصيدك متوقع يفضل موجب.' : '⚠️ بالمعدل الحالي، فيه احتمال عجز قبل نهاية الشهر.'}`);
+    return { handled: true };
+  }
+
+  // Goals are real Firestore data; never fall through to the generic help message.
+  if (/^اهدافي$|^الاهداف$|اعرض اهدافي|وريني اهدافي|اهداف الادخار|اهداف التوفير/.test(n)) {
+    const context = await getTrustedFinancialContext(userId);
+    const goals = Array.isArray(context.goals) ? context.goals : [];
+    if (!goals.length) {
+      await sendMessage(chatId, '🎯 مفيش أهداف مالية مسجلة حاليًا.\n\nتقدر تضيف هدف من قسم الأهداف في التطبيق، وبعدها هتابع تقدمه معاك هنا.');
+      return { handled: true };
+    }
+    const lines = goals.slice(0, 10).map((goal: any, index: number) => {
+      const target = Math.max(0, Number(goal.targetAmount || 0));
+      const current = Math.max(0, Number(goal.currentAmount || 0));
+      const remaining = Math.max(0, target - current);
+      const percent = target > 0 ? Math.min(100, Math.round((current / target) * 100)) : 0;
+      return `${index + 1}. ${goal.titleAr || goal.title || 'هدف مالي'}\n   💰 ${formatMoney(current)} / ${formatMoney(target)} ج.م — ${percent}%\n   🎯 المتبقي: ${formatMoney(remaining)} ج.م${goal.targetDate ? ` — 📅 ${goal.targetDate}` : ''}`;
+    });
+    await sendMessage(chatId, `🎯 أهدافك المالية:\n\n${lines.join('\n\n')}`);
     return { handled: true };
   }
 
@@ -1093,6 +1118,10 @@ export async function handleTelegramFinancialAssistantV2(input: HandlerInput): P
     }
     if (sourceMatch.wallet.currency !== destinationMatch.wallet.currency) {
       await sendMessage(chatId, '⚠️ التحويل بين عملتين مختلفتين محتاج سعر صرف، والميزة دي مش مفعلة تلقائيًا لسه.');
+      return { handled: true };
+    }
+    if (Number(sourceMatch.wallet.balance || 0) < transfer.amount) {
+      await sendMessage(chatId, `⚠️ رصيد محفظة ${sourceMatch.wallet.nameAr || sourceMatch.wallet.name} غير كافٍ للتحويل.\n\n💰 الرصيد الحالي: ${formatMoney(Number(sourceMatch.wallet.balance || 0))} ${sourceMatch.wallet.currency || 'EGP'}\n🔄 المبلغ المطلوب: ${formatMoney(transfer.amount)} ${sourceMatch.wallet.currency || 'EGP'}`);
       return { handled: true };
     }
     await savePending(telegramUserId, {
