@@ -22,6 +22,11 @@ import { createObligation } from '../services/obligationService';
 import { routeFinancialIntent } from '../services/financialIntentRouter';
 import { matchFinancialContext } from '../services/financialContextMatcher';
 
+import {
+  tryInterpretFinancialMessageWithGemini,
+  GeminiFinancialInterpretation,
+} from '../services/geminiFinancialInterpreter';
+
 import { CategoryType } from '../../types';
 
 const router = Router();
@@ -1089,6 +1094,145 @@ ${formatMoney(context.safeToSpend || 0)} ج.م`;
 أضف التزام شهري نت 600 جنيه`;
 }
 
+
+// ============================================================
+// Gemini Natural-Language Bridge
+// ============================================================
+
+function getGeminiFrequencyArabic(
+  frequency?: 'WEEKLY' | 'MONTHLY' | 'QUARTERLY' | 'YEARLY'
+): string {
+  switch (frequency) {
+    case 'WEEKLY':
+      return 'اسبوعي';
+    case 'QUARTERLY':
+      return 'ربع سنوي';
+    case 'YEARLY':
+      return 'سنوي';
+    case 'MONTHLY':
+    default:
+      return 'شهري';
+  }
+}
+
+function buildCanonicalFinancialText(
+  interpretation: GeminiFinancialInterpretation,
+  originalText: string
+): string {
+  const amount =
+    interpretation.amount !== undefined
+      ? String(interpretation.amount)
+      : '';
+
+  const title =
+    String(
+      interpretation.title ||
+      interpretation.entityHint ||
+      ''
+    ).trim();
+
+  const entity =
+    String(
+      interpretation.entityHint ||
+      interpretation.title ||
+      ''
+    ).trim();
+
+  const wallet =
+    String(
+      interpretation.walletHint ||
+      ''
+    ).trim();
+
+  const destinationWallet =
+    String(
+      interpretation.destinationWalletHint ||
+      ''
+    ).trim();
+
+  const dueDay =
+    interpretation.dueDay !== undefined
+      ? ` يوم ${interpretation.dueDay}`
+      : '';
+
+  switch (interpretation.intent) {
+    case 'CREATE_EXPENSE':
+      if (!interpretation.amount) {
+        return originalText;
+      }
+
+      return `دفعت ${amount} جنيه ${title || 'مصروف'}${
+        wallet ? ` من ${wallet}` : ''
+      }`.trim();
+
+    case 'CREATE_INCOME':
+      if (!interpretation.amount) {
+        return originalText;
+      }
+
+      return `قبضت ${amount} جنيه ${title || 'دخل'}${
+        wallet ? ` على ${wallet}` : ''
+      }`.trim();
+
+    case 'CREATE_BILL':
+      if (!interpretation.amount) {
+        return originalText;
+      }
+
+      return `اضف فاتورة ${title || 'فاتورة'} ${amount} جنيه${dueDay}`.trim();
+
+    case 'PAY_BILL':
+      return `دفعت فاتورة ${entity || 'الفاتورة'}${
+        interpretation.amount ? ` ${amount} جنيه` : ''
+      }${wallet ? ` من ${wallet}` : ''}`.trim();
+
+    case 'CREATE_OBLIGATION':
+      if (!interpretation.amount) {
+        return originalText;
+      }
+
+      return `اضف التزام ${getGeminiFrequencyArabic(
+        interpretation.frequency
+      )} ${title || 'التزام'} ${amount} جنيه${dueDay}`.trim();
+
+    case 'PAY_OBLIGATION':
+      if (!interpretation.amount) {
+        return originalText;
+      }
+
+      return `دفعت ${amount} جنيه من التزام ${entity || 'الالتزام'}${
+        wallet ? ` من ${wallet}` : ''
+      }`.trim();
+
+    case 'PAY_DEBT':
+      if (!interpretation.amount) {
+        return originalText;
+      }
+
+      return `دفعت ${amount} جنيه من دين ${entity || 'الدين'}${
+        wallet ? ` من ${wallet}` : ''
+      }`.trim();
+
+    case 'TRANSFER':
+      if (
+        !interpretation.amount ||
+        !wallet ||
+        !destinationWallet
+      ) {
+        return originalText;
+      }
+
+      return `حولت ${amount} جنيه من ${wallet} الي ${destinationWallet}`.trim();
+
+    case 'FINANCIAL_QUERY':
+    case 'CREATE_GOAL':
+    case 'GOAL_CONTRIBUTION':
+    case 'UNKNOWN':
+    default:
+      return originalText;
+  }
+}
+
 // ============================================================
 // Telegram Webhook
 // ============================================================
@@ -1345,7 +1489,7 @@ ${code}
       if (normalized === 'billtest') {
         await sendTelegramMessage(
           chatId,
-          '✅ BILL ROUTER V4 + WALLET MATCHER شغال'
+          '✅ TELEGRAM V5 + GEMINI HYBRID شغال'
         );
 
         return res.status(200).json({
@@ -2392,10 +2536,129 @@ ${transaction.id}`
 
       if (text) {
         // ======================================================
-        // Smart Financial Intent Router V1
+        // Hybrid Financial Understanding V2
+        //
+        // 1) Fast deterministic router first.
+        // 2) If the message is not understood, Gemini interprets
+        //    natural Arabic/Egyptian language into a structured action.
+        // 3) Gemini never writes to Firestore. It only converts the
+        //    user's language into a canonical message that the existing
+        //    validated/safe execution pipeline can understand.
         // ======================================================
 
-        const smartIntent = routeFinancialIntent(text);
+        const originalUserText = text;
+        let processingText = originalUserText;
+
+        let smartIntent: any =
+          routeFinancialIntent(processingText);
+
+        let geminiInterpretation:
+          GeminiFinancialInterpretation | null = null;
+
+        if (
+          smartIntent.intent === 'UNKNOWN'
+        ) {
+          geminiInterpretation =
+            await tryInterpretFinancialMessageWithGemini(
+              originalUserText
+            );
+
+          if (geminiInterpretation) {
+            console.log(
+              'Telegram Gemini interpretation:',
+              JSON.stringify(geminiInterpretation)
+            );
+
+            if (
+              geminiInterpretation.requiresClarification
+            ) {
+              await sendTelegramMessage(
+                chatId,
+                geminiInterpretation.clarificationQuestion ||
+                  'محتاج تفاصيل أكتر علشان أفهم العملية بشكل آمن.'
+              );
+
+              return res.status(200).json({
+                success: true,
+                received: true,
+              });
+            }
+
+            if (
+              geminiInterpretation.confidence >= 0.70
+            ) {
+              // Features understood by Gemini but not yet connected
+              // to the Telegram execution pipeline.
+              if (
+                geminiInterpretation.intent === 'CREATE_GOAL' ||
+                geminiInterpretation.intent === 'GOAL_CONTRIBUTION'
+              ) {
+                await sendTelegramMessage(
+                  chatId,
+                  `🎯 فهمت إن طلبك متعلق بهدف ادخار، لكن تنفيذ الأهداف من Telegram لسه مش مربوط بالتنفيذ الآمن.
+
+تقدر تستخدم قسم الأهداف داخل Mizaniya AI حاليًا.`
+                );
+
+                return res.status(200).json({
+                  success: true,
+                  received: true,
+                });
+              }
+
+              if (
+                geminiInterpretation.intent === 'TRANSFER'
+              ) {
+                await sendTelegramMessage(
+                  chatId,
+                  `🔄 فهمت إنك عايز تعمل تحويل بين محافظك.
+
+ميزة التحويل من Telegram لسه مش مربوطة بالتنفيذ الآمن، ومش هنحرك أي رصيد من غير مسار تأكيد كامل.`
+                );
+
+                return res.status(200).json({
+                  success: true,
+                  received: true,
+                });
+              }
+
+              processingText =
+                buildCanonicalFinancialText(
+                  geminiInterpretation,
+                  originalUserText
+                );
+
+              smartIntent =
+                routeFinancialIntent(
+                  processingText
+                );
+
+              // FINANCIAL_QUERY can remain natural text because
+              // the read-only query handler below reads the original.
+              if (
+                geminiInterpretation.intent ===
+                  'FINANCIAL_QUERY' &&
+                smartIntent.intent ===
+                  'UNKNOWN'
+              ) {
+                smartIntent = {
+                  intent:
+                    'FINANCIAL_QUERY',
+                  confidence:
+                    geminiInterpretation.confidence,
+                  originalText:
+                    originalUserText,
+                };
+              }
+
+              console.log(
+                'Telegram Gemini canonical text:',
+                processingText
+              );
+            }
+          }
+        }
+
         let billPaymentFallsBackToExpense = false;
 
         console.log(
@@ -2409,7 +2672,7 @@ ${transaction.id}`
 
         const createBillCandidate =
           smartIntent.intent === 'CREATE_BILL'
-            ? extractCreateBillCandidate(text)
+            ? extractCreateBillCandidate(processingText)
             : null;
 
         if (createBillCandidate) {
@@ -2452,7 +2715,7 @@ ${transaction.id}`
 
         const billPaymentCandidate =
           smartIntent.intent === 'PAY_BILL'
-            ? extractBillPaymentCandidate(text)
+            ? extractBillPaymentCandidate(processingText)
             : null;
 
         if (billPaymentCandidate) {
@@ -2504,7 +2767,7 @@ ${transaction.id}`
 
             const walletMatch = await matchWalletForUser(
               linkedUserId,
-              text || ''
+              processingText || ''
             );
 
             if (walletMatch.ambiguous) {
@@ -2527,7 +2790,7 @@ ${walletNames}
               });
             }
 
-            if (hasExplicitWalletReference(text || '') && !walletMatch.wallet) {
+            if (hasExplicitWalletReference(processingText || '') && !walletMatch.wallet) {
               await sendTelegramMessage(
                 chatId,
                 `⚠️ مش لاقي المحفظة اللي ذكرتها: ${walletMatch.searchText || 'غير معروفة'}
@@ -2618,7 +2881,7 @@ ${walletNames}
           const contextualMatch =
             await matchFinancialContext(
               linkedUserId,
-              text
+              processingText
             );
 
           console.log(
@@ -2767,7 +3030,7 @@ ${formatMoney(typedAmount)} ج.م
 
             const walletMatch = await matchWalletForUser(
               linkedUserId,
-              text || ''
+              processingText || ''
             );
 
             if (walletMatch.ambiguous) {
@@ -2790,7 +3053,7 @@ ${walletNames}
               });
             }
 
-            if (hasExplicitWalletReference(text || '') && !walletMatch.wallet) {
+            if (hasExplicitWalletReference(processingText || '') && !walletMatch.wallet) {
               await sendTelegramMessage(
                 chatId,
                 `⚠️ مش لاقي المحفظة اللي ذكرتها: ${walletMatch.searchText || 'غير معروفة'}
@@ -3027,7 +3290,7 @@ ${formatMoney(amount)} ج.م`
 
             const walletMatch = await matchWalletForUser(
               linkedUserId,
-              text || ''
+              processingText || ''
             );
 
             if (walletMatch.ambiguous) {
@@ -3050,7 +3313,7 @@ ${walletNames}
               });
             }
 
-            if (hasExplicitWalletReference(text || '') && !walletMatch.wallet) {
+            if (hasExplicitWalletReference(processingText || '') && !walletMatch.wallet) {
               await sendTelegramMessage(
                 chatId,
                 `⚠️ مش لاقي المحفظة اللي ذكرتها: ${walletMatch.searchText || 'غير معروفة'}
@@ -3520,7 +3783,7 @@ ${formatMoney(
 
           const walletMatch = await matchWalletForUser(
               linkedUserId,
-              text || ''
+              processingText || ''
             );
 
             if (walletMatch.ambiguous) {
@@ -3543,7 +3806,7 @@ ${walletNames}
               });
             }
 
-            if (hasExplicitWalletReference(text || '') && !walletMatch.wallet) {
+            if (hasExplicitWalletReference(processingText || '') && !walletMatch.wallet) {
               await sendTelegramMessage(
                 chatId,
                 `⚠️ مش لاقي المحفظة اللي ذكرتها: ${walletMatch.searchText || 'غير معروفة'}
@@ -3971,14 +4234,14 @@ ${formatMoney(
         const incomeCandidate =
           smartIntent.intent === 'CREATE_INCOME'
             ? extractIncomeCandidate(
-                text
+                processingText
               )
             : null;
 
         if (incomeCandidate) {
           const walletMatch = await matchWalletForUser(
               linkedUserId,
-              text || ''
+              processingText || ''
             );
 
             if (walletMatch.ambiguous) {
@@ -4001,7 +4264,7 @@ ${walletNames}
               });
             }
 
-            if (hasExplicitWalletReference(text || '') && !walletMatch.wallet) {
+            if (hasExplicitWalletReference(processingText || '') && !walletMatch.wallet) {
               await sendTelegramMessage(
                 chatId,
                 `⚠️ مش لاقي المحفظة اللي ذكرتها: ${walletMatch.searchText || 'غير معروفة'}
@@ -4176,14 +4439,14 @@ ${wallet.nameAr || wallet.name}
           smartIntent.intent === 'CREATE_EXPENSE' ||
           billPaymentFallsBackToExpense
             ? extractExpenseCandidate(
-                text
+                processingText
               )
             : null;
 
         if (expenseCandidate) {
           const walletMatch = await matchWalletForUser(
               linkedUserId,
-              text || ''
+              processingText || ''
             );
 
             if (walletMatch.ambiguous) {
@@ -4206,7 +4469,7 @@ ${walletNames}
               });
             }
 
-            if (hasExplicitWalletReference(text || '') && !walletMatch.wallet) {
+            if (hasExplicitWalletReference(processingText || '') && !walletMatch.wallet) {
               await sendTelegramMessage(
                 chatId,
                 `⚠️ مش لاقي المحفظة اللي ذكرتها: ${walletMatch.searchText || 'غير معروفة'}
