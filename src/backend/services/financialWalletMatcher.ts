@@ -298,6 +298,72 @@ function calculateScore(
   );
 }
 
+
+// ============================================================
+// Explicit wallet mention anywhere in natural text
+//
+// This is intentionally based on REAL wallet names only.
+// It lets phrases such as:
+//   "قبضت 500 جنيه على فودافون كاش"
+// resolve the destination wallet without treating every Arabic
+// word after "على" as a wallet reference. Longer wallet names
+// win over shorter contained names ("فودافون كاش" > "كاش").
+// ============================================================
+
+function findWalletMentionInText(
+  wallets: any[],
+  text: string
+): any | null {
+  const normalizedText = normalizeArabicText(text);
+
+  if (!normalizedText) {
+    return null;
+  }
+
+  const candidates: Array<{
+    wallet: any;
+    length: number;
+  }> = [];
+
+  for (const wallet of wallets) {
+    const names = getWalletExplicitNames(wallet);
+    let bestLength = 0;
+
+    for (const rawName of names) {
+      const name = canonicalWalletPhrase(rawName);
+
+      if (!name) {
+        continue;
+      }
+
+      const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const phrasePattern = new RegExp(`(?:^|\\s)${escaped}(?:$|\\s)`);
+
+      if (phrasePattern.test(normalizedText)) {
+        bestLength = Math.max(bestLength, name.length);
+      }
+    }
+
+    if (bestLength > 0) {
+      candidates.push({
+        wallet,
+        length: bestLength,
+      });
+    }
+  }
+
+  if (!candidates.length) {
+    return null;
+  }
+
+  candidates.sort((a, b) => b.length - a.length);
+
+  const bestLength = candidates[0].length;
+  const best = candidates.filter((item) => item.length === bestLength);
+
+  return best.length === 1 ? best[0].wallet : null;
+}
+
 // ============================================================
 // Extract Wallet Phrase
 // ============================================================
@@ -458,6 +524,26 @@ export async function matchWalletForUser(
       wallets: [],
       confidence: 0,
       searchText: '',
+      ambiguous: false,
+    };
+  }
+
+  // First, look for an actual registered wallet name anywhere in
+  // the natural-language message. This handles destination-style
+  // income phrases such as "على فودافون كاش" safely.
+  const mentionedWallet =
+    findWalletMentionInText(wallets, text);
+
+  if (mentionedWallet) {
+    return {
+      wallet: mentionedWallet,
+      wallets: [mentionedWallet],
+      confidence: 1,
+      searchText:
+        mentionedWallet.nameAr ||
+        mentionedWallet.name ||
+        mentionedWallet.id ||
+        '',
       ambiguous: false,
     };
   }
