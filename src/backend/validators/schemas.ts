@@ -79,6 +79,7 @@ export const transactionCreateSchema = z
     hasAnomaly: z.boolean().optional(),
 
     relatedDebtId: z.string().optional(),
+    relatedBillId: z.string().optional(),
     relatedObligationId: z.string().optional(),
     relatedInstallmentId: z.string().optional(),
   })

@@ -17,6 +17,10 @@ export function validateBackendEnv(): void {
     'REDIS_PORT',
     'GEMINI_API_KEY',
     'ALLOWED_ORIGINS',
+    'TELEGRAM_BOT_TOKEN',
+    'TELEGRAM_WEBHOOK_SECRET',
+    'TELEGRAM_BOT_TOKEN',
+    'TELEGRAM_WEBHOOK_SECRET',
   ];
 
   const missing = requiredBackendVars.filter((v) => !process.env[v]);

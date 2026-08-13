@@ -52,6 +52,7 @@ export interface Transaction {
   aiTag?: string;
   hasAnomaly?: boolean;
   relatedDebtId?: string;
+  relatedBillId?: string;
   relatedObligationId?: string;
   relatedInstallmentId?: string;
 }
@@ -190,6 +191,9 @@ export interface Bill {
   icon: string;
   urgency: 'high' | 'medium' | 'low';
   obligationId?: string;
+  paidAt?: string;
+  paidTransactionId?: string;
+  paidWalletId?: string;
 }
 
 export interface HealthScoreBreakdown {

@@ -144,3 +144,104 @@ describe('P0 Hardening - Redis & Rate Limiter / Idempotency Failures in Producti
     expect(next).not.toHaveBeenCalled();
   });
 });
+
+
+describe('P0 Hardening - Telegram Webhook Security Guardrails', () => {
+  it('requires a Telegram webhook secret and verifies the Telegram secret header', () => {
+    const source = fs.readFileSync(
+      path.join(process.cwd(), 'src/backend/routes/telegramRoutes.ts'),
+      'utf8'
+    );
+
+    expect(source).toContain("const TELEGRAM_SECRET_HEADER = 'x-telegram-bot-api-secret-token'");
+    expect(source).toContain('TELEGRAM_WEBHOOK_SECRET');
+    expect(source).toContain('timingSafeEqual');
+    expect(source).toContain('verifyTelegramWebhookRequest(req, res)');
+    expect(source).toContain('secret_token:');
+  });
+
+  it('protects Telegram setup and info endpoints with Firebase admin authentication', () => {
+    const source = fs.readFileSync(
+      path.join(process.cwd(), 'src/backend/routes/telegramRoutes.ts'),
+      'utf8'
+    );
+
+    expect(source).toMatch(
+      /router\.post\s*\(\s*['"]\/setup['"]\s*,\s*authMiddleware as any\s*,\s*requireAdmin as any/
+    );
+
+    expect(source).toMatch(
+      /router\.get\s*\(\s*['"]\/info['"]\s*,\s*authMiddleware as any\s*,\s*requireAdmin as any/
+    );
+  });
+
+  it('requires Telegram security configuration in production environment validation', () => {
+    const source = fs.readFileSync(
+      path.join(process.cwd(), 'src/backend/config/env.ts'),
+      'utf8'
+    );
+
+    expect(source).toContain("'TELEGRAM_BOT_TOKEN'");
+    expect(source).toContain("'TELEGRAM_WEBHOOK_SECRET'");
+  });
+
+  it('does not log the full raw Telegram update payload', () => {
+    const source = fs.readFileSync(
+      path.join(process.cwd(), 'src/backend/routes/telegramRoutes.ts'),
+      'utf8'
+    );
+
+    expect(source).not.toContain("JSON.stringify(update)");
+    expect(source).toContain("updateType:");
+  });
+});
+
+describe('P0 Hardening - Telegram Webhook Security Guardrails', () => {
+  it('requires a Telegram webhook secret and verifies the Telegram secret header', () => {
+    const source = fs.readFileSync(
+      path.join(process.cwd(), 'src/backend/routes/telegramRoutes.ts'),
+      'utf8'
+    );
+
+    expect(source).toContain("const TELEGRAM_SECRET_HEADER = 'x-telegram-bot-api-secret-token'");
+    expect(source).toContain('TELEGRAM_WEBHOOK_SECRET');
+    expect(source).toContain('timingSafeEqual');
+    expect(source).toContain('verifyTelegramWebhookRequest(req, res)');
+    expect(source).toContain('secret_token:');
+  });
+
+  it('protects Telegram setup and info endpoints with Firebase admin authentication', () => {
+    const source = fs.readFileSync(
+      path.join(process.cwd(), 'src/backend/routes/telegramRoutes.ts'),
+      'utf8'
+    );
+
+    expect(source).toMatch(
+      /router\.post\s*\(\s*['"]\/setup['"]\s*,\s*authMiddleware as any\s*,\s*requireAdmin as any/
+    );
+
+    expect(source).toMatch(
+      /router\.get\s*\(\s*['"]\/info['"]\s*,\s*authMiddleware as any\s*,\s*requireAdmin as any/
+    );
+  });
+
+  it('requires Telegram security configuration in production environment validation', () => {
+    const source = fs.readFileSync(
+      path.join(process.cwd(), 'src/backend/config/env.ts'),
+      'utf8'
+    );
+
+    expect(source).toContain("'TELEGRAM_BOT_TOKEN'");
+    expect(source).toContain("'TELEGRAM_WEBHOOK_SECRET'");
+  });
+
+  it('does not log the full raw Telegram update payload', () => {
+    const source = fs.readFileSync(
+      path.join(process.cwd(), 'src/backend/routes/telegramRoutes.ts'),
+      'utf8'
+    );
+
+    expect(source).not.toContain('JSON.stringify(update)');
+    expect(source).toContain('updateType:');
+  });
+});

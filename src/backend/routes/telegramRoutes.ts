@@ -17,8 +17,8 @@ import { transactionRepository } from '../repositories/transactionRepository';
 import { billRepository } from '../repositories/budgetAndGoalRepositories';
 import { getWalletsForUser } from '../services/walletService';
 import { transactionCreateSchema, billCreateSchema } from '../validators/schemas';
-import { recordDebtPayment } from '../services/debtService';
 import { createObligation } from '../services/obligationService';
+import { executeBillPayment, executeDebtPayment } from '../services/financialExecutionService';
 import { routeFinancialIntent } from '../services/financialIntentRouter';
 import { matchFinancialContext } from '../services/financialContextMatcher';
 
@@ -1746,7 +1746,7 @@ ${code}
         }
 
         // ======================================================
-        // Confirm Bill Payment
+        // Confirm Bill Payment - Atomic
         // ======================================================
 
         if (
@@ -1758,93 +1758,65 @@ ${code}
 
           if (!billId || !walletId) {
             await pendingRef.delete();
-
             await sendTelegramMessage(
               chatId,
               'تعذر سداد الفاتورة لأن بيانات العملية غير صالحة.'
             );
-
-            return res.status(200).json({
-              success: true,
-              received: true,
-            });
-          }
-
-          const bills = await billRepository.getBills(linkedUserId);
-          const bill = bills.find((item: any) => item.id === billId);
-
-          if (!bill) {
-            await pendingRef.delete();
-            await sendTelegramMessage(chatId, '⚠️ الفاتورة لم تعد موجودة.');
             return res.status(200).json({ success: true, received: true });
           }
 
-          if (bill.isPaid) {
-            await pendingRef.delete();
-            await sendTelegramMessage(chatId, '✅ الفاتورة مدفوعة بالفعل.');
-            return res.status(200).json({ success: true, received: true });
-          }
-
-          const amount = Number(bill.amount || 0);
-
-          if (!Number.isFinite(amount) || amount <= 0) {
-            await pendingRef.delete();
-            await sendTelegramMessage(chatId, '⚠️ مبلغ الفاتورة غير صالح.');
-            return res.status(200).json({ success: true, received: true });
-          }
-
-          const transactionPayload = {
-            title: `سداد فاتورة ${bill.titleAr || bill.title}`,
-            amount,
-            currency: pending.walletCurrency || 'EGP',
-            type: 'expense' as const,
-            category: 'Bills & Subscriptions' as const,
-            walletId,
-            paymentMethod: 'Cash' as const,
-            date: new Date().toISOString().split('T')[0],
-            merchant: bill.biller || undefined,
-            notes: `تم سداد الفاتورة من Telegram - Bill ID: ${bill.id}`,
-            aiTag: 'telegram-bill-payment',
-          };
-
-          const validation = transactionCreateSchema.safeParse(transactionPayload);
-
-          if (!validation.success) {
-            console.error(
-              'Telegram bill payment validation failed:',
-              validation.error.format()
+          try {
+            const result = await executeBillPayment(
+              linkedUserId,
+              {
+                billId,
+                walletId,
+                paymentMethod: 'Cash',
+                date: new Date().toISOString().split('T')[0],
+                idempotencyKey: `telegram-bill-${telegramUserId}-${pending.createdAt}`,
+                source: 'telegram',
+              }
             );
 
+            await markBudgetStale(linkedUserId);
             await pendingRef.delete();
-            await sendTelegramMessage(chatId, 'تعذر تسجيل سداد الفاتورة.');
-            return res.status(200).json({ success: true, received: true });
+
+            await sendTelegramMessage(
+              chatId,
+              `✅ تم سداد الفاتورة بنجاح.
+
+🧾 الفاتورة:
+${pending.billTitle || 'فاتورة'}
+
+💰 المبلغ:
+${formatMoney(result.amount)} ج.م
+
+👛 تم الخصم من:
+${result.walletName || pending.walletName || 'المحفظة'}
+
+💵 الرصيد بعد السداد:
+${formatMoney(result.newWalletBalance)} ج.م
+
+✅ تم تعليم الفاتورة كمدفوعة
+📊 وتم تحديث الميزانية
+
+رقم المعاملة:
+${result.transactionId}`
+            );
+          } catch (error: any) {
+            const statusCode = Number(error?.statusCode || 500);
+            if (statusCode >= 400 && statusCode < 500) {
+              await pendingRef.delete();
+            }
+            await sendTelegramMessage(
+              chatId,
+              `⚠️ تعذر سداد الفاتورة.
+
+${error?.message || 'حدث خطأ غير متوقع.'}`
+            );
           }
 
-          const transaction = await transactionRepository.createTransaction(
-            linkedUserId,
-            validation.data
-          );
-
-          const paidBill = await billRepository.payBill(linkedUserId, billId);
-
-          if (!paidBill) {
-            // The transaction has already been created at this point. This should
-            // only happen if the bill disappeared between the live read and write.
-            console.error('Bill disappeared after transaction creation:', billId);
-          }
-
-          await markBudgetStale(linkedUserId);
-          await pendingRef.delete();
-
-          await sendTelegramMessage(
-            chatId,
-            `✅ تم سداد الفاتورة بنجاح.\n\n🧾 الفاتورة:\n${bill.titleAr || bill.title}\n\n💰 المبلغ:\n${formatMoney(amount)} ج.م\n\n👛 تم الخصم من:\n${pending.walletName || 'المحفظة'}\n\n✅ تم تعليم الفاتورة كمدفوعة\n📊 وتم تحديث الميزانية\n\nرقم المعاملة:\n${transaction.id}`
-          );
-
-          return res.status(200).json({
-            success: true,
-            received: true,
-          });
+          return res.status(200).json({ success: true, received: true });
         }
 
         // ======================================================
@@ -2289,192 +2261,86 @@ ${pending.walletName || 'المحفظة'}
         }
 
         // ======================================================
-        // Confirm Debt Payment
+        // Confirm Debt Payment - Atomic
         // ======================================================
 
         if (
           pending.actionType ===
           'debt_payment'
         ) {
-          const debtId =
-            String(
-              pending.debtId || ''
-            );
-
-          const amount =
-            Number(
-              pending.amount || 0
-            );
+          const debtId = String(pending.debtId || '');
+          const walletId = String(pending.walletId || '');
+          const amount = Number(pending.amount || 0);
 
           if (
             !debtId ||
-            !Number.isFinite(
-              amount
-            ) ||
+            !walletId ||
+            !Number.isFinite(amount) ||
             amount <= 0
           ) {
             await pendingRef.delete();
-
             await sendTelegramMessage(
               chatId,
               'تعذر تنفيذ سداد الدين لأن بيانات العملية غير صالحة.'
             );
-
-            return res
-              .status(200)
-              .json({
-                success: true,
-                received: true,
-              });
+            return res.status(200).json({ success: true, received: true });
           }
 
-          const contextBefore =
-            await getTrustedFinancialContext(
-              linkedUserId
+          try {
+            const result = await executeDebtPayment(
+              linkedUserId,
+              {
+                debtId,
+                amount,
+                walletId,
+                paymentMethod: 'Cash',
+                date: new Date().toISOString().split('T')[0],
+                idempotencyKey: `telegram-debt-${telegramUserId}-${pending.createdAt}`,
+                source: 'telegram',
+              }
             );
 
-          const currentDebt = (
-            contextBefore.debts ||
-            []
-          ).find(
-            (debt: any) =>
-              debt.id === debtId
-          );
-
-          if (!currentDebt) {
+            await markBudgetStale(linkedUserId);
             await pendingRef.delete();
 
             await sendTelegramMessage(
               chatId,
-              '⚠️ الدين لم يعد موجودًا في حسابك.'
-            );
-
-            return res
-              .status(200)
-              .json({
-                success: true,
-                received: true,
-              });
-          }
-
-          const remainingNow =
-            Number(
-              currentDebt
-                .remainingAmount ||
-                0
-            );
-
-          if (
-            remainingNow <= 0
-          ) {
-            await pendingRef.delete();
-
-            await sendTelegramMessage(
-              chatId,
-              '✅ الدين ده مسدد بالفعل.'
-            );
-
-            return res
-              .status(200)
-              .json({
-                success: true,
-                received: true,
-              });
-          }
-
-          if (
-            amount >
-            remainingNow
-          ) {
-            await pendingRef.delete();
-
-            await sendTelegramMessage(
-              chatId,
-              `⚠️ قيمة الدين اتغيرت قبل التأكيد.
-
-المتبقي حاليًا:
-${formatMoney(
-  remainingNow
-)} ج.م
-
-ابعت عملية السداد من جديد.`
-            );
-
-            return res
-              .status(200)
-              .json({
-                success: true,
-                received: true,
-              });
-          }
-
-          const date =
-            new Date()
-              .toISOString()
-              .split('T')[0];
-
-          const idempotencyKey =
-            `telegram-debt-${telegramUserId}-${pending.createdAt}`;
-
-          await recordDebtPayment(
-            linkedUserId,
-            debtId,
-            amount,
-            'Cash',
-            date,
-            idempotencyKey
-          );
-
-          await markBudgetStale(
-            linkedUserId
-          );
-
-          await pendingRef.delete();
-
-          const contextAfter =
-            await getTrustedFinancialContext(
-              linkedUserId
-            );
-
-          const updatedDebt = (
-            contextAfter.debts ||
-            []
-          ).find(
-            (debt: any) =>
-              debt.id === debtId
-          );
-
-          const remainingAfter =
-            Number(
-              updatedDebt
-                ?.remainingAmount ||
-                0
-            );
-
-          await sendTelegramMessage(
-            chatId,
-            `✅ تم تسجيل سداد الدين بنجاح.
+              `✅ تم تسجيل سداد الدين بنجاح.
 
 🏦 الدين:
 ${pending.creditorName || 'دين'}
 
 💰 المبلغ المدفوع:
-${formatMoney(amount)} ج.م
+${formatMoney(result.amount)} ج.م
 
 📉 المتبقي على الدين:
-${formatMoney(
-  remainingAfter
-)} ج.م
+${formatMoney(result.remainingAmount)} ج.م
 
-📊 تم تحديث بيانات الدين والميزانية.`
-          );
+👛 تم الخصم من:
+${result.walletName || pending.walletName || 'المحفظة'}
 
-          return res
-            .status(200)
-            .json({
-              success: true,
-              received: true,
-            });
+💵 الرصيد بعد السداد:
+${formatMoney(result.newWalletBalance)} ج.م
+
+📊 تم تحديث بيانات الدين والميزانية.
+
+رقم المعاملة:
+${result.transactionId}`
+            );
+          } catch (error: any) {
+            const statusCode = Number(error?.statusCode || 500);
+            if (statusCode >= 400 && statusCode < 500) {
+              await pendingRef.delete();
+            }
+            await sendTelegramMessage(
+              chatId,
+              `⚠️ تعذر تسجيل سداد الدين.
+
+${error?.message || 'حدث خطأ غير متوقع.'}`
+            );
+          }
+
+          return res.status(200).json({ success: true, received: true });
         }
 
         // ======================================================

@@ -37,6 +37,11 @@ import { profileRepository } from '../repositories/profileRepository';
 import { getTrustedFinancialContext } from '../services/financialContextService';
 
 import {
+  executeBillPayment,
+  executeDebtPayment,
+} from '../services/financialExecutionService';
+
+import {
   buildSmartBudgetPlan,
   saveSmartBudgetPlan,
 } from '../services/budgetPlanningService';
@@ -44,7 +49,6 @@ import {
 import {
   createDebt,
   getDebt,
-  recordDebtPayment,
   archiveDebt,
   getDebtPayments,
 } from '../services/debtService';
@@ -1809,42 +1813,38 @@ router.post(
     res
   ) => {
     try {
-      const userId =
-        req.user!.uid;
+      const userId = req.user!.uid;
+      const billId = req.params.id;
 
-      const billId =
-        req.params.id;
+      const idempotencyKey =
+        req.header('X-Idempotency-Key') ||
+        req.header('x-idempotency-key') ||
+        undefined;
 
-      const updatedBill =
-        await billRepository.payBill(
-          userId,
-          billId
-        );
+      const result = await executeBillPayment(
+        userId,
+        {
+          billId,
+          walletId: req.body?.walletId,
+          paymentMethod: req.body?.paymentMethod,
+          date: req.body?.date,
+          idempotencyKey,
+          source: 'api',
+        }
+      );
 
-      if (!updatedBill) {
-        return res
-          .status(404)
-          .json({
-            error:
-              'Bill not found',
-          });
-      }
+      await markBudgetStale(userId);
 
       return res.json({
         success: true,
-        bill:
-          updatedBill,
+        ...result,
       });
     } catch (err: any) {
-      return res
-        .status(500)
-        .json({
-          error:
-            'Failed to mark bill as paid',
-
-          details:
-            err.message,
-        });
+      return mapErrorToResponse(
+        res,
+        err,
+        'Failed to pay bill'
+      );
     }
   }
 );
@@ -2421,13 +2421,17 @@ router.post(
       }
 
       const result =
-        await recordDebtPayment(
+        await executeDebtPayment(
           userId,
-          req.params.id,
-          amount,
-          paymentMethod,
-          date,
-          idempotencyKey
+          {
+            debtId: req.params.id,
+            amount: Number(amount),
+            walletId: req.body?.walletId,
+            paymentMethod,
+            date,
+            idempotencyKey,
+            source: 'api',
+          }
         );
 
       await markBudgetStale(
