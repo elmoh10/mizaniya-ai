@@ -50,7 +50,7 @@ export function App() {
   });
   const [goals, setGoals] = useState<Goal[]>([]);
   const [bills, setBills] = useState<Bill[]>([]);
-  const [subscriptions] = useState<Subscription[]>([]);
+  const [subscriptions, setSubscriptions] = useState<Subscription[]>([]);
   const [healthScore, setHealthScore] = useState<HealthScoreBreakdown | null>(null);
   const [timeline, setTimeline] = useState<InsightTimelineItem[]>([]);
 
@@ -102,12 +102,13 @@ export function App() {
     setDataError(null);
 
     try {
-      const [walletsRes, txsRes, budgetRes, goalsRes, billsRes, healthRes, insightsRes] = await Promise.all([
+      const [walletsRes, txsRes, budgetRes, goalsRes, billsRes, subscriptionsRes, healthRes, insightsRes] = await Promise.all([
         apiClient.get('/wallets'),
         apiClient.get('/transactions'),
         apiClient.get('/budgets/current'),
         apiClient.get('/goals'),
         apiClient.get('/bills'),
+        apiClient.get('/subscriptions'),
         apiClient.get('/financial-health'),
         apiClient.get('/smart-insights'),
       ]);
@@ -117,6 +118,7 @@ export function App() {
       if (budgetRes.success && budgetRes.budget) setBudget(budgetRes.budget);
       if (goalsRes.success) setGoals(goalsRes.goals || []);
       if (billsRes.success) setBills(billsRes.bills || []);
+      if (subscriptionsRes.success) setSubscriptions(subscriptionsRes.subscriptions || []);
       if (insightsRes?.success && insightsRes.data?.timeline) setTimeline(insightsRes.data.timeline);
       if (healthRes.success && healthRes.status === 'CALCULATED' && healthRes.score) {
         setHealthScore(healthRes.score);

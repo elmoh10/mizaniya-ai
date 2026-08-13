@@ -36,6 +36,7 @@ import { profileRepository } from '../repositories/profileRepository';
 
 import { getTrustedFinancialContext } from '../services/financialContextService';
 import { buildSmartFinancialInsights } from '../services/smartFinancialInsightsService';
+import { buildSmartAlerts, buildWeeklyFinancialReport, detectRecurringSubscriptions } from '../services/financialAutomationService';
 
 import {
   executeBillPayment,
@@ -904,6 +905,21 @@ router.get(
 // ============================================================
 // Smart Financial Insights / Predictive Engine
 // ============================================================
+router.get('/smart-alerts', async (req: AuthenticatedRequest, res) => {
+  try { return res.json({ success:true, data: await buildSmartAlerts(req.user!.uid) }); }
+  catch (err:any) { return res.status(500).json({ error:'Failed to build smart alerts', details:err.message }); }
+});
+
+router.get('/weekly-report', async (req: AuthenticatedRequest, res) => {
+  try { return res.json({ success:true, data: await buildWeeklyFinancialReport(req.user!.uid) }); }
+  catch (err:any) { return res.status(500).json({ error:'Failed to build weekly report', details:err.message }); }
+});
+
+router.get('/subscriptions/detected', async (req: AuthenticatedRequest, res) => {
+  try { return res.json({ success:true, subscriptions: await detectRecurringSubscriptions(req.user!.uid) }); }
+  catch (err:any) { return res.status(500).json({ error:'Failed to detect subscriptions', details:err.message }); }
+});
+
 router.get('/smart-insights', async (req: AuthenticatedRequest, res) => {
   try {
     const data = await buildSmartFinancialInsights(req.user!.uid);

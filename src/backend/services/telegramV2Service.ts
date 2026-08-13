@@ -3,6 +3,7 @@ import { transactionRepository } from '../repositories/transactionRepository';
 import { matchWalletForUser } from './financialWalletMatcher';
 import { getTrustedFinancialContext } from './financialContextService';
 import { buildSmartFinancialInsights } from './smartFinancialInsightsService';
+import { buildSmartAlerts, buildWeeklyFinancialReport, detectRecurringSubscriptions } from './financialAutomationService';
 import { executeBillPayment } from './financialExecutionService';
 import { billRepository, goalRepository } from '../repositories/budgetAndGoalRepositories';
 import {
@@ -931,6 +932,22 @@ ${actions.map((a,i)=>`${i+1}. ${a}`).join('\n')}
 🔮 الرصيد المتوقع آخر الشهر: ${formatMoney(x.projectedMonthEndBalance)} ج.م
 💡 مستوى المخاطر: ${x.risk === 'HIGH' ? 'مرتفع' : x.risk === 'MEDIUM' ? 'متوسط' : 'منخفض'}`);
     return { handled: true };
+  }
+
+  if (/تنبيهاتي|التنبيهات|حذرني|alerts/.test(n)) {
+    const a:any=await buildSmartAlerts(userId);
+    await sendMessage(chatId, a.alerts.length ? `🔔 تنبيهات Mizaniya AI:\n\n${a.alerts.map((x:any,i:number)=>`${i+1}. ${x.titleAr}\n${x.messageAr}\n💡 ${x.actionAr}`).join('\n\n')}` : '✅ مفيش تنبيهات مالية مهمة حاليًا.');
+    return {handled:true};
+  }
+  if (/اشتراكاتي|الاشتراكات المتكرره|اكتشف الاشتراكات|subscription/.test(n)) {
+    const subs:any[]=await detectRecurringSubscriptions(userId);
+    await sendMessage(chatId, subs.length ? `🔁 المدفوعات المتكررة المحتملة:\n\n${subs.map((x:any,i:number)=>`${i+1}. ${x.name} — ${formatMoney(x.amount)} ج.م — ${x.cycle==='monthly'?'شهري':'سنوي'} — ثقة ${x.confidence}%\nالموعد المتوقع: ${x.nextExpectedDate}`).join('\n\n')}` : 'مفيش نمط اشتراكات متكررة واضح في معاملاتك حتى الآن.');
+    return {handled:true};
+  }
+  if (/تقرير الاسبوع|ملخص الاسبوع الذكي|تقريري الاسبوعي|weekly report/.test(n)) {
+    const r:any=await buildWeeklyFinancialReport(userId);
+    await sendMessage(chatId, `📊 تقريرك الأسبوعي (${r.period.from} → ${r.period.to}):\n\n💸 المصروفات: ${formatMoney(r.expenses)} ج.م\n💰 الدخل: ${formatMoney(r.income)} ج.م\n📈 الصافي: ${formatMoney(r.net)} ج.م${r.topCategory?`\n🏷️ أعلى فئة: ${r.topCategory.category} — ${formatMoney(r.topCategory.amount)} ج.م`:''}\n🔮 توقع نهاية الشهر: ${formatMoney(r.monthEndForecast)} ج.م\n⚠️ المخاطر: ${r.risk==='HIGH'?'مرتفعة':r.risk==='MEDIUM'?'متوسطة':'منخفضة'}\n\n🎯 خطوات الأسبوع الجاي:\n${r.actions.map((x:string,i:number)=>`${i+1}. ${x}`).join('\n')}`);
+    return {handled:true};
   }
 
   const today = cairoDate();
