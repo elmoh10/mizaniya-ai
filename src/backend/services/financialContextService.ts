@@ -1,6 +1,16 @@
 import { db } from '../config/firebaseAdmin';
 import { Wallet, Transaction, Budget, Goal, Bill, InstallmentDebt } from '../../types';
 
+
+function getBillRemainingAmount(bill: any): number {
+  if (bill?.isPaid === true) return 0;
+  const original = Number(bill?.amount || 0);
+  const storedRemaining = Number(bill?.remainingAmount);
+  if (Number.isFinite(storedRemaining)) return Math.max(0, storedRemaining);
+  const paid = Math.max(0, Number(bill?.paidAmount || 0));
+  return Math.max(0, original - paid);
+}
+
 export interface TrustedFinancialContext {
   userId: string;
   userProfile?: any;
@@ -241,8 +251,8 @@ export async function getTrustedFinancialContext(userId: string): Promise<Truste
   const totalWalletBalance = wallets.reduce((acc, w) => acc + (w.balance || 0), 0);
 
   // Separate Bills from Debt Installments
-  const unpaidBills = bills.filter((b) => !b.isPaid);
-  const unpaidBillsTotal = unpaidBills.reduce((acc, b) => acc + (b.amount || 0), 0);
+  const unpaidBills = bills.filter((b) => getBillRemainingAmount(b) > 0);
+  const unpaidBillsTotal = unpaidBills.reduce((acc, b) => acc + getBillRemainingAmount(b), 0);
 
   const activeInstallments = installments.filter((i) => i.status === 'ACTIVE');
   const activeDebts = debts.filter((d: any) => d.status === 'ACTIVE' || d.status === 'active' || d.status === 'OVERDUE' || d.status === 'PAUSED');
@@ -299,7 +309,7 @@ export async function getTrustedFinancialContext(userId: string): Promise<Truste
 
   const unpaidBillsThisMonthTotal = bills
     .filter((b) => {
-      const isPaidMatch = !b.isPaid;
+      const isPaidMatch = getBillRemainingAmount(b) > 0;
       const monthMatch = (b.dueDate || '').startsWith(monthKey);
       if (!isPaidMatch || !monthMatch) return false;
       if (b.obligationId && activeObligationIds.has(b.obligationId)) {
@@ -307,7 +317,7 @@ export async function getTrustedFinancialContext(userId: string): Promise<Truste
       }
       return true;
     })
-    .reduce((acc, b) => acc + (b.amount || 0), 0);
+    .reduce((acc, b) => acc + getBillRemainingAmount(b), 0);
 
   const outstandingCommitments = calculateOutstandingMonthlyCommitments(debts, obligations, recentTransactions, monthKey, installments);
   const availableBalance = calculateAvailableBalance(salary, currentMonthExpenses, unpaidBillsThisMonthTotal, outstandingCommitments);

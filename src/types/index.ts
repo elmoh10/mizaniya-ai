@@ -33,6 +33,8 @@ export interface Wallet {
   icon: string;
   color: string;
   isPrimary?: boolean;
+  isArchived?: boolean;
+  archivedAt?: string;
 }
 
 export interface Transaction {
@@ -200,6 +202,12 @@ export interface Bill {
   paidAt?: string;
   paidTransactionId?: string;
   paidWalletId?: string;
+  paidAmount?: number;
+  remainingAmount?: number;
+  paymentStatus?: 'UNPAID' | 'PARTIALLY_PAID' | 'PAID';
+  lastPaidAt?: string;
+  paidTransactionIds?: string[];
+  updatedAt?: string;
 }
 
 export interface HealthScoreBreakdown {

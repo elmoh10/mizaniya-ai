@@ -44,6 +44,7 @@ async function resolveWalletId(userId: string, walletId?: string): Promise<strin
 
 export interface ExecuteBillPaymentInput {
   billId: string;
+  amount?: number;
   walletId?: string;
   paymentMethod?: PaymentMethod | string;
   date?: string;
@@ -92,14 +93,34 @@ export async function executeBillPayment(
     if (!walletSnap.exists) throw httpError('المحفظة غير موجودة.', 404);
 
     const bill = billSnap.data() as any;
-    if (bill.isPaid === true) {
-      throw httpError('الفاتورة مدفوعة بالفعل.', 409);
-    }
+    const originalAmount = Number(bill.amount || 0);
+    const alreadyPaid = Math.max(0, Number(bill.paidAmount || 0));
+    const storedRemaining = Number(bill.remainingAmount);
+    const remainingBefore = Number.isFinite(storedRemaining)
+      ? Math.max(0, storedRemaining)
+      : Math.max(0, originalAmount - alreadyPaid);
 
-    const amount = Number(bill.amount || 0);
-    if (!Number.isFinite(amount) || amount <= 0) {
+    if (bill.isPaid === true || remainingBefore <= 0) {
+      throw httpError('الفاتورة مدفوعة بالكامل بالفعل.', 409);
+    }
+    if (!Number.isFinite(originalAmount) || originalAmount <= 0) {
       throw httpError('مبلغ الفاتورة غير صالح.', 400);
     }
+
+    const requestedAmount = input.amount === undefined
+      ? remainingBefore
+      : Number(input.amount);
+    if (!Number.isFinite(requestedAmount) || requestedAmount <= 0) {
+      throw httpError('مبلغ السداد يجب أن يكون أكبر من صفر.', 400);
+    }
+    if (requestedAmount > remainingBefore + 0.000001) {
+      throw httpError('مبلغ السداد أكبر من المتبقي على الفاتورة.', 400);
+    }
+
+    const amount = Math.min(requestedAmount, remainingBefore);
+    const newPaidAmount = alreadyPaid + amount;
+    const newRemainingAmount = Math.max(0, originalAmount - newPaidAmount);
+    const isFullyPaid = newRemainingAmount <= 0.000001;
 
     const wallet = walletSnap.data() as any;
     const currentBalance = Number(wallet.balance || 0);
@@ -138,9 +159,14 @@ export async function executeBillPayment(
     });
 
     transaction.update(billRef, {
-      isPaid: true,
-      paidAt: nowIso,
+      isPaid: isFullyPaid,
+      paymentStatus: isFullyPaid ? 'PAID' : 'PARTIALLY_PAID',
+      paidAmount: newPaidAmount,
+      remainingAmount: newRemainingAmount,
+      lastPaidAt: nowIso,
+      ...(isFullyPaid ? { paidAt: nowIso } : {}),
       paidTransactionId: txRef.id,
+      paidTransactionIds: FieldValue.arrayUnion(txRef.id),
       paidWalletId: walletId,
       updatedAt: nowIso,
     });
@@ -152,6 +178,10 @@ export async function executeBillPayment(
       walletId,
       walletName: wallet.nameAr || wallet.name || walletId,
       amount,
+      originalBillAmount: originalAmount,
+      paidAmount: newPaidAmount,
+      remainingAmount: newRemainingAmount,
+      isFullyPaid,
       newWalletBalance: currentBalance - amount,
       paidAt: nowIso,
     };

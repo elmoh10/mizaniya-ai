@@ -22,6 +22,8 @@ import { executeBillPayment, executeDebtPayment } from '../services/financialExe
 import { routeFinancialIntent } from '../services/financialIntentRouter';
 import { matchFinancialContext } from '../services/financialContextMatcher';
 import { handleTelegramFinancialAssistantV2 } from '../services/telegramV2Service';
+import { parseReceiptImageWithGemini } from '../services/ocrService';
+import { transcribeAudioWithGemini } from '../services/voiceService';
 
 import {
   tryInterpretFinancialMessageWithGemini,
@@ -71,6 +73,66 @@ async function sendTelegramMessage(
       `Telegram sendMessage failed: ${response.status} ${errorText}`
     );
   }
+}
+
+
+async function downloadTelegramFileBase64(
+  fileId: string,
+  mimeTypeFallback = 'application/octet-stream'
+): Promise<{ base64: string; mimeType: string }> {
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+  if (!token) throw new Error('TELEGRAM_BOT_TOKEN is not configured');
+
+  const metaResponse = await fetch(
+    `https://api.telegram.org/bot${token}/getFile?file_id=${encodeURIComponent(fileId)}`
+  );
+  if (!metaResponse.ok) {
+    throw new Error(`Telegram getFile failed: ${metaResponse.status}`);
+  }
+
+  const meta: any = await metaResponse.json();
+  const filePath = meta?.result?.file_path;
+  if (!filePath) throw new Error('Telegram file_path missing');
+
+  const fileResponse = await fetch(
+    `https://api.telegram.org/file/bot${token}/${filePath}`
+  );
+  if (!fileResponse.ok) {
+    throw new Error(`Telegram file download failed: ${fileResponse.status}`);
+  }
+
+  const buffer = Buffer.from(await fileResponse.arrayBuffer());
+  if (buffer.length > 10 * 1024 * 1024) {
+    throw new Error('Telegram media is too large (max 10MB).');
+  }
+
+  let mimeType = mimeTypeFallback;
+  const lower = String(filePath).toLowerCase();
+  if (/\.jpe?g$/.test(lower)) mimeType = 'image/jpeg';
+  else if (/\.png$/.test(lower)) mimeType = 'image/png';
+  else if (/\.webp$/.test(lower)) mimeType = 'image/webp';
+  else if (/\.ogg$|\.oga$/.test(lower)) mimeType = 'audio/ogg';
+  else if (/\.mp3$/.test(lower)) mimeType = 'audio/mpeg';
+  else if (/\.m4a$/.test(lower)) mimeType = 'audio/mp4';
+
+  return { base64: buffer.toString('base64'), mimeType };
+}
+
+function normalizeReceiptCategory(value: unknown, fallbackText: string): CategoryType {
+  const allowed: CategoryType[] = [
+    'Food & Groceries',
+    'Housing & Utilities',
+    'Bills & Subscriptions',
+    'Transport & Ride Apps',
+    'Installments & Debt',
+    'Health & Education',
+    'Family & Allowances',
+    'Shopping & Entertainment',
+    'Emergency & Savings',
+    'Income & Salary',
+  ];
+  const asString = String(value || '').trim() as CategoryType;
+  return allowed.includes(asString) ? asString : detectExpenseCategory(fallbackText);
 }
 
 function generateLinkCode(): string {
@@ -1359,7 +1421,7 @@ router.post(
       const telegramUserId =
         message.from?.id;
 
-      const text =
+      let text =
         message.text?.trim();
 
       if (
@@ -1565,6 +1627,120 @@ ${code}
             success: true,
             received: true,
           });
+      }
+
+      // ========================================================
+      // Telegram Voice -> Text
+      // ========================================================
+
+      if (!text && message.voice?.file_id) {
+        try {
+          const audio = await downloadTelegramFileBase64(
+            String(message.voice.file_id),
+            String(message.voice.mime_type || 'audio/ogg')
+          );
+          const transcription = await transcribeAudioWithGemini(
+            audio.base64,
+            audio.mimeType
+          );
+          if (!transcription.success || !transcription.text) {
+            await sendTelegramMessage(
+              chatId,
+              '🎙️ مقدرتش أفهم الرسالة الصوتية بدقة. ابعتها تاني أو اكتب العملية كنص.'
+            );
+            return res.status(200).json({ success: true, received: true });
+          }
+          text = transcription.text.trim();
+          await sendTelegramMessage(chatId, `🎙️ فهمت: ${text}`);
+        } catch (mediaError: any) {
+          console.error('Telegram voice handling error:', mediaError);
+          await sendTelegramMessage(chatId, '🎙️ حصلت مشكلة أثناء قراءة الرسالة الصوتية. جرّب تاني أو اكتبها كنص.');
+          return res.status(200).json({ success: true, received: true });
+        }
+      }
+
+      // ========================================================
+      // Telegram Receipt Photo -> Pending Expense
+      // ========================================================
+
+      if (Array.isArray(message.photo) && message.photo.length > 0) {
+        try {
+          const photo = message.photo[message.photo.length - 1];
+          const downloaded = await downloadTelegramFileBase64(
+            String(photo.file_id),
+            'image/jpeg'
+          );
+          const parsed = await parseReceiptImageWithGemini(
+            downloaded.base64,
+            downloaded.mimeType
+          );
+
+          if (!parsed.success || !parsed.totalAmount || parsed.totalAmount <= 0) {
+            await sendTelegramMessage(
+              chatId,
+              '🧾 مقدرتش أقرأ مبلغ الإيصال بدقة. جرّب صورة أوضح أو اكتب المصروف كنص.'
+            );
+            return res.status(200).json({ success: true, received: true });
+          }
+
+          const caption = String(message.caption || '').trim();
+          const walletMatch = await matchWalletForUser(linkedUserId, caption);
+          if (walletMatch.ambiguous || !walletMatch.wallet) {
+            await sendTelegramMessage(
+              chatId,
+              '👛 الإيصال اتقري، لكن مش قادر أحدد المحفظة. ابعت الصورة تاني واكتب في الـCaption اسم المحفظة، مثال: من فودافون كاش.'
+            );
+            return res.status(200).json({ success: true, received: true });
+          }
+
+          const merchant = parsed.merchantName || 'إيصال شراء';
+          const category = normalizeReceiptCategory(parsed.category, `${merchant} ${parsed.items?.map((i) => i.name).join(' ') || ''}`);
+          const payload = {
+            title: merchant,
+            amount: Number(parsed.totalAmount),
+            currency: walletMatch.wallet.currency || 'EGP',
+            type: 'expense' as const,
+            category,
+            walletId: walletMatch.wallet.id,
+            paymentMethod: 'Cash' as const,
+            date: parsed.date && /^\d{4}-\d{2}-\d{2}/.test(parsed.date) ? parsed.date.slice(0, 10) : new Date().toISOString().split('T')[0],
+            merchant,
+            notes: `تم استخراج المصروف من صورة إيصال Telegram${caption ? ` — ${caption}` : ''}`,
+            aiTag: 'telegram-receipt-ocr',
+          };
+
+          const validation = transactionCreateSchema.safeParse(payload);
+          if (!validation.success) {
+            console.error('Telegram receipt validation failed:', validation.error.format());
+            await sendTelegramMessage(chatId, '🧾 تم قراءة الإيصال لكن تعذر تجهيز العملية للتسجيل.');
+            return res.status(200).json({ success: true, received: true });
+          }
+
+          const now = Date.now();
+          await db
+            .collection('telegram_pending_transactions')
+            .doc(String(telegramUserId))
+            .set({
+              userId: linkedUserId,
+              telegramUserId,
+              chatId,
+              actionType: 'transaction',
+              transaction: validation.data,
+              used: false,
+              createdAt: now,
+              expiresAt: now + PENDING_TX_EXPIRY_MINUTES * 60 * 1000,
+            });
+
+          await sendTelegramMessage(
+            chatId,
+            `🧾 قرأت الإيصال وجاهز للتسجيل:\n\n🏪 ${merchant}\n💰 ${formatMoney(Number(parsed.totalAmount))} ج.م\n📂 ${getArabicCategoryName(category)}\n👛 ${walletMatch.wallet.nameAr || walletMatch.wallet.name}\n📅 ${payload.date}\n${parsed.confidenceScore != null ? `🤖 الثقة: ${Math.round(parsed.confidenceScore * 100)}%\n` : ''}\nاكتب: تأكيد\nأو: إلغاء`
+          );
+          return res.status(200).json({ success: true, received: true });
+        } catch (mediaError: any) {
+          console.error('Telegram receipt OCR error:', mediaError);
+          await sendTelegramMessage(chatId, '🧾 حصلت مشكلة أثناء قراءة صورة الإيصال. جرّب صورة أوضح أو اكتب المصروف كنص.');
+          return res.status(200).json({ success: true, received: true });
+        }
       }
 
       const normalized =

@@ -8,7 +8,9 @@ export class WalletRepository {
 
   async getWallets(userId: string): Promise<Wallet[]> {
     const snapshot = await this.getCollection(userId).get();
-    return snapshot.docs.map((doc) => doc.data() as Wallet);
+    return snapshot.docs
+      .map((doc) => doc.data() as Wallet)
+      .filter((wallet) => wallet.isArchived !== true);
   }
 
   async getWallet(userId: string, walletId: string): Promise<Wallet | null> {
@@ -46,7 +48,11 @@ export class WalletRepository {
     const doc = await docRef.get();
     if (!doc.exists) return false;
 
-    await docRef.delete();
+    await docRef.update({
+      isArchived: true,
+      archivedAt: new Date().toISOString(),
+      isPrimary: false,
+    });
     return true;
   }
 
@@ -61,14 +67,17 @@ export class WalletRepository {
 
     return await db.runTransaction(async (transaction) => {
       const snap = await transaction.get(userWalletsRef);
-      if (!snap.empty) {
-        return snap.docs[0].data() as Wallet;
+      const activeDocs = snap.docs.filter((doc) => doc.data()?.isArchived !== true);
+      if (activeDocs.length > 0) {
+        return activeDocs[0].data() as Wallet;
       }
 
       const defaultDocRef = userWalletsRef.doc(defaultWalletId);
       const defaultDoc = await transaction.get(defaultDocRef);
       if (defaultDoc.exists) {
-        return defaultDoc.data() as Wallet;
+        const data = defaultDoc.data() as Wallet;
+        transaction.update(defaultDocRef, { isArchived: false, archivedAt: null, isPrimary: true });
+        return { ...data, isArchived: false, archivedAt: undefined, isPrimary: true };
       }
 
       const defaultWallet: Wallet = {

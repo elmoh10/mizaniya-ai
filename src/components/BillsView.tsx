@@ -294,13 +294,25 @@ export const BillsView: React.FC<BillsViewProps> = ({
                   </div>
                 </div>
 
-                <div className="flex items-baseline justify-between">
-                  <span className="text-xl font-black text-slate-900 dark:text-white">
-                    {formatCurrency(b.amount, 'EGP', lang)}
-                  </span>
-                  <span className="text-xs text-slate-500 font-medium">
-                    {isAr ? `تاريخ الاستحقاق: ${b.dueDate}` : `Due: ${b.dueDate}`}
-                  </span>
+                <div className="space-y-1">
+                  <div className="flex items-baseline justify-between">
+                    <span className="text-xl font-black text-slate-900 dark:text-white">
+                      {formatCurrency(b.amount, 'EGP', lang)}
+                    </span>
+                    <span className="text-xs text-slate-500 font-medium">
+                      {isAr ? `تاريخ الاستحقاق: ${b.dueDate}` : `Due: ${b.dueDate}`}
+                    </span>
+                  </div>
+                  {!b.isPaid && Number((b as any).paidAmount || 0) > 0 && (
+                    <div className="flex items-center justify-between text-[11px] font-bold">
+                      <span className="text-emerald-600">
+                        {isAr ? `تم دفع ${formatCurrency(Number((b as any).paidAmount || 0), 'EGP', lang)}` : `Paid ${formatCurrency(Number((b as any).paidAmount || 0), 'EGP', lang)}`}
+                      </span>
+                      <span className="text-amber-600">
+                        {isAr ? `متبقي ${formatCurrency(Number((b as any).remainingAmount ?? Math.max(0, b.amount - Number((b as any).paidAmount || 0))), 'EGP', lang)}` : `Remaining ${formatCurrency(Number((b as any).remainingAmount ?? Math.max(0, b.amount - Number((b as any).paidAmount || 0))), 'EGP', lang)}`}
+                      </span>
+                    </div>
+                  )}
                 </div>
 
                 {b.fawryCode && (
@@ -337,7 +349,7 @@ export const BillsView: React.FC<BillsViewProps> = ({
                       <span>{isAr ? 'تم الدفع بنجاح' : 'Paid Successfully'}</span>
                     </>
                   ) : (
-                    <span>{isAr ? 'دفع فوراً بـ InstaPay / فوري' : 'Pay via InstaPay / Fawry'}</span>
+                    <span>{isAr ? (Number((b as any).paidAmount || 0) > 0 ? 'دفع المبلغ المتبقي' : 'دفع فوراً بـ InstaPay / فوري') : (Number((b as any).paidAmount || 0) > 0 ? 'Pay Remaining' : 'Pay via InstaPay / Fawry')}</span>
                   )}
                 </button>
               </div>

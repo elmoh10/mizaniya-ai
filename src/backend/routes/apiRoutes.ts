@@ -1825,6 +1825,7 @@ router.post(
         userId,
         {
           billId,
+          amount: req.body?.amount,
           walletId: req.body?.walletId,
           paymentMethod: req.body?.paymentMethod,
           date: req.body?.date,

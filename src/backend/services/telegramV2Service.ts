@@ -2,6 +2,8 @@ import { db } from '../config/firebaseAdmin';
 import { transactionRepository } from '../repositories/transactionRepository';
 import { matchWalletForUser } from './financialWalletMatcher';
 import { getTrustedFinancialContext } from './financialContextService';
+import { executeBillPayment } from './financialExecutionService';
+import { billRepository } from '../repositories/budgetAndGoalRepositories';
 import {
   editTransactionAtomic,
   restoreTransactionAtomic,
@@ -137,6 +139,72 @@ async function savePending(telegramUserId: number, payload: Record<string, unkno
 async function matchWalletByHint(userId: string, hint: string) {
   const result = await matchWalletForUser(userId, `من ${hint}`);
   return result;
+}
+
+function billRemainingAmount(bill: any): number {
+  if (bill?.isPaid === true) return 0;
+  const original = Number(bill?.amount || 0);
+  const storedRemaining = Number(bill?.remainingAmount);
+  if (Number.isFinite(storedRemaining)) return Math.max(0, storedRemaining);
+  const paid = Math.max(0, Number(bill?.paidAmount || 0));
+  return Math.max(0, original - paid);
+}
+
+function billLabel(bill: any): string {
+  const remaining = billRemainingAmount(bill);
+  const original = Number(bill?.amount || 0);
+  const paid = Math.max(0, original - remaining);
+  const status = paid > 0 && remaining > 0 ? ` — مدفوع ${formatMoney(paid)} / متبقي ${formatMoney(remaining)}` : '';
+  return `${bill?.titleAr || bill?.title || 'فاتورة'} — ${formatMoney(original)} ج.م${status} — ${bill?.dueDate || '-'}`;
+}
+
+function parseBillPaymentRequest(text: string): { amount?: number; titleHint: string } | null {
+  const normalized = normalizeArabicText(text);
+  if (!/(دفعت|سددت|سداد|اسدد|هسدد|سدد)/.test(normalized)) return null;
+  if (!/(فاتور|كهرب|مياه|غاز|انترنت|النت|تليفون|موبايل)/.test(normalized)) return null;
+
+  const amount = parseAmount(text);
+  let titleHint = normalized
+    .replace(/\d+(?:[.,]\d+)?/g, ' ')
+    .replace(/\b(?:دفعت|سددت|سداد|اسدد|هسدد|سدد|فاتوره|فاتورة|جنيه|جنيهات|من|المحفظه|محفظه|الكاش|كاش)\b/g, ' ')
+    .replace(/\s+(?:علي|على|بـ|ب)\s+.+$/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  // Wallet phrases typically follow "من". Remove that suffix from the raw normalized text.
+  const beforeWallet = normalized.split(/\s+من\s+/)[0];
+  if (beforeWallet !== normalized) {
+    titleHint = beforeWallet
+      .replace(/\d+(?:[.,]\d+)?/g, ' ')
+      .replace(/\b(?:دفعت|سددت|سداد|اسدد|هسدد|سدد|فاتوره|فاتورة|جنيه|جنيهات)\b/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  return { amount, titleHint };
+}
+
+function scoreBillMatch(bill: any, hint: string): number {
+  const target = normalizeArabicText(`${bill?.titleAr || ''} ${bill?.title || ''} ${bill?.biller || ''}`);
+  const cleanHint = normalizeArabicText(hint);
+  if (!cleanHint) return 0.4;
+  if (target === cleanHint) return 1;
+  if (target.includes(cleanHint) || cleanHint.includes(target)) return 0.95;
+  const words = cleanHint.split(' ').filter((w) => w.length >= 2);
+  if (!words.length) return 0.4;
+  const hits = words.filter((w) => target.includes(w)).length;
+  return hits / words.length;
+}
+
+async function findBillCandidates(userId: string, hint: string): Promise<any[]> {
+  const bills = (await billRepository.getBills(userId))
+    .filter((bill: any) => billRemainingAmount(bill) > 0);
+  if (!bills.length) return [];
+  const scored = bills
+    .map((bill: any) => ({ bill, score: scoreBillMatch(bill, hint) }))
+    .filter((entry) => entry.score >= 0.35)
+    .sort((a, b) => b.score - a.score);
+  return scored.length ? scored.map((x) => x.bill).slice(0, 8) : [];
 }
 
 function parseTransfer(text: string): { amount: number; source: string; destination: string } | null {
@@ -364,6 +432,56 @@ async function handleV2Pending(input: HandlerInput): Promise<HandlerResult> {
     return { handled: true };
   }
 
+  if (pending.actionType === 'v2_bill_select') {
+    const num = Number(String(text).trim());
+    const candidates = Array.isArray(pending.candidates) ? pending.candidates : [];
+    const selected = Number.isInteger(num) ? candidates[num - 1] : null;
+    if (!selected) {
+      await sendMessage(chatId, `اكتب رقم فاتورة من 1 إلى ${candidates.length}، أو اكتب: إلغاء`);
+      return { handled: true };
+    }
+
+    const bills = await billRepository.getBills(userId);
+    const bill: any = bills.find((item: any) => String(item.id) === String(selected.billId));
+    if (!bill || billRemainingAmount(bill) <= 0) {
+      await ref.delete();
+      await sendMessage(chatId, '⚠️ الفاتورة المختارة لم تعد مستحقة أو تم سدادها بالفعل.');
+      return { handled: true };
+    }
+
+    const walletMatch = await matchWalletForUser(userId, String(pending.originalText || ''));
+    if (walletMatch.ambiguous || !walletMatch.wallet) {
+      await ref.delete();
+      await sendMessage(chatId, '👛 مش قادر أحدد محفظة السداد بدقة. اكتب اسم المحفظة في طلب السداد وابعت العملية من جديد.');
+      return { handled: true };
+    }
+
+    const remaining = billRemainingAmount(bill);
+    const requested = pending.requestedAmount == null ? remaining : Number(pending.requestedAmount);
+    if (!Number.isFinite(requested) || requested <= 0 || requested > remaining + 0.000001) {
+      await ref.delete();
+      await sendMessage(chatId, `⚠️ مبلغ السداد غير صالح. المتبقي على الفاتورة ${formatMoney(remaining)} ج.م.`);
+      return { handled: true };
+    }
+
+    await savePending(telegramUserId, {
+      actionType: 'v2_bill_payment',
+      userId,
+      chatId,
+      billId: bill.id,
+      billTitle: bill.titleAr || bill.title || 'فاتورة',
+      amount: requested,
+      remainingBefore: remaining,
+      walletId: walletMatch.wallet.id,
+      walletName: walletMatch.wallet.nameAr || walletMatch.wallet.name,
+    });
+    await sendMessage(
+      chatId,
+      `🧾 سداد فاتورة جاهز للتأكيد:\n\n${billLabel(bill)}\n\n💰 هتدفع: ${formatMoney(requested)} ج.م\n👛 من: ${walletMatch.wallet.nameAr || walletMatch.wallet.name}\n✅ المتبقي بعد السداد: ${formatMoney(Math.max(0, remaining - requested))} ج.م\n\nاكتب: تأكيد\nأو: إلغاء`
+    );
+    return { handled: true };
+  }
+
   if (pending.actionType === 'v2_tx_select_edit' || pending.actionType === 'v2_tx_select_delete') {
     const num = Number(String(text).trim());
     const candidates = Array.isArray(pending.candidates) ? pending.candidates : [];
@@ -435,6 +553,25 @@ async function handleV2Pending(input: HandlerInput): Promise<HandlerResult> {
       await sendMessage(
         chatId,
         `✅ تم استرجاع العملية وإعادة تأثيرها على المحفظة.\n\n📝 ${result.title}\n💰 ${formatMoney(result.amount)} ج.م`
+      );
+      return { handled: true };
+    }
+
+    if (pending.actionType === 'v2_bill_payment') {
+      const result = await executeBillPayment(userId, {
+        billId: String(pending.billId),
+        amount: Number(pending.amount),
+        walletId: String(pending.walletId),
+        paymentMethod: 'Cash',
+        date: cairoDate(),
+        idempotencyKey: `telegram-v2-bill-${telegramUserId}-${pending.createdAt}`,
+        source: 'telegram',
+      });
+      await markBudgetStale(userId);
+      await ref.delete();
+      await sendMessage(
+        chatId,
+        `✅ تم سداد الفاتورة بنجاح.\n\n🧾 ${pending.billTitle || 'فاتورة'}\n💰 المدفوع: ${formatMoney(result.amount)} ج.م\n👛 من: ${result.walletName || pending.walletName}\n💵 رصيد المحفظة بعد السداد: ${formatMoney(result.newWalletBalance)} ج.م\n${result.isFullyPaid ? '✅ الفاتورة اتسددت بالكامل.' : `🟡 سداد جزئي — المتبقي: ${formatMoney(result.remainingAmount)} ج.م`}\n📊 تم تحديث الميزانية.`
       );
       return { handled: true };
     }
@@ -533,14 +670,15 @@ async function handleV2Pending(input: HandlerInput): Promise<HandlerResult> {
         txCol.where('walletId', '==', walletId).limit(1).get(),
         txCol.where('destinationWalletId', '==', walletId).limit(1).get(),
       ]);
-      if (!asSource.empty || !asDest.empty) {
-        await ref.delete();
-        await sendMessage(chatId, '⚠️ لا يمكن حذف المحفظة لأن لها سجل عمليات. للحفاظ على التاريخ المالي خليها موجودة أو أضف ميزة الأرشفة لاحقًا.');
-        return { handled: true };
-      }
+      const hasHistory = !asSource.empty || !asDest.empty;
       await archiveWalletForUser(userId, walletId);
       await ref.delete();
-      await sendMessage(chatId, `✅ تم حذف المحفظة ${wallet.nameAr || wallet.name} بنجاح.`);
+      await sendMessage(
+        chatId,
+        hasHistory
+          ? `✅ تم أرشفة المحفظة ${wallet.nameAr || wallet.name} بنجاح مع الاحتفاظ بتاريخ العمليات.`
+          : `✅ تم حذف/أرشفة المحفظة ${wallet.nameAr || wallet.name} بنجاح.`
+      );
       return { handled: true };
     }
 
@@ -607,12 +745,12 @@ async function handleReadQueries(input: HandlerInput): Promise<HandlerResult> {
 
   if (/عليا كام فواتير|فواتير لسه|الفواتير غير المدفوعه|الفواتير اللي عليا/.test(n)) {
     const snap = await db.collection('users').doc(userId).collection('bills').get();
-    const bills = snap.docs.map((d) => ({ id: d.id, ...d.data() } as any)).filter((b) => b.isPaid !== true);
-    const total = bills.reduce((s, b) => s + Number(b.amount || 0), 0);
+    const bills = snap.docs.map((d) => ({ id: d.id, ...d.data() } as any)).filter((b) => billRemainingAmount(b) > 0);
+    const total = bills.reduce((s, b) => s + billRemainingAmount(b), 0);
     await sendMessage(
       chatId,
       bills.length
-        ? `🧾 عندك ${bills.length} فاتورة غير مدفوعة بإجمالي ${formatMoney(total)} ج.م:\n\n${bills.slice(0, 8).map((b, i) => `${i + 1}. ${b.titleAr || b.title || 'فاتورة'} — ${formatMoney(Number(b.amount || 0))} ج.م — ${b.dueDate || '-'}`).join('\n')}`
+        ? `🧾 عندك ${bills.length} فاتورة غير مدفوعة بإجمالي ${formatMoney(total)} ج.م:\n\n${bills.slice(0, 8).map((b, i) => `${i + 1}. ${b.titleAr || b.title || 'فاتورة'} — متبقي ${formatMoney(billRemainingAmount(b))} ج.م — ${b.dueDate || '-'}`).join('\n')}`
         : '✅ مفيش فواتير غير مدفوعة حاليًا.'
     );
     return { handled: true };
@@ -623,14 +761,14 @@ async function handleReadQueries(input: HandlerInput): Promise<HandlerResult> {
     const todayTime = new Date(`${today}T00:00:00Z`).getTime();
     const bills = snap.docs
       .map((d) => ({ id: d.id, ...d.data() } as any))
-      .filter((b) => b.isPaid !== true && b.dueDate)
+      .filter((b) => billRemainingAmount(b) > 0 && b.dueDate)
       .map((b) => ({ ...b, days: Math.ceil((new Date(`${b.dueDate}T00:00:00Z`).getTime() - todayTime) / 86400000) }))
       .filter((b) => b.days >= 0 && b.days <= 7)
       .sort((a, b) => a.days - b.days);
     await sendMessage(
       chatId,
       bills.length
-        ? `⏰ الفواتير المستحقة خلال 7 أيام:\n\n${bills.map((b) => `• ${b.titleAr || b.title} — ${formatMoney(Number(b.amount || 0))} ج.م — بعد ${b.days} يوم`).join('\n')}`
+        ? `⏰ الفواتير المستحقة خلال 7 أيام:\n\n${bills.map((b) => `• ${b.titleAr || b.title} — متبقي ${formatMoney(billRemainingAmount(b))} ج.م — بعد ${b.days} يوم`).join('\n')}`
         : '✅ مفيش فواتير مستحقة خلال الـ7 أيام الجاية.'
     );
     return { handled: true };
@@ -763,6 +901,14 @@ export async function handleTelegramFinancialAssistantV2(input: HandlerInput): P
   const { userId, telegramUserId, chatId, text, sendMessage } = input;
   const n = normalizeArabicText(text);
 
+  if (n === '/help' || /^(مساعده|المساعده|تقدر تعمل ايه|تقدر تعمل ايه دلوقتي)$/.test(n)) {
+    await sendMessage(
+      chatId,
+      `🤖 Mizaniya AI — الأوامر المالية المتاحة:\n\n💸 مصروف ودخل\n• اشتريت أكل بـ250 جنيه من الكاش\n• قبضت مكافأة 500 جنيه على فودافون كاش\n\n🧾 الفواتير\n• أضف فاتورة كهرباء 500 جنيه يوم 20\n• دفعت فاتورة الكهرباء 200 جنيه من الكاش\n• عليا كام فواتير؟\n• الفواتير اللي قربت\n\n👛 المحافظ\n• اعمل محفظة اسمها فودافون كاش ورصيدها 1000 جنيه\n• اعرض محافظي\n• حول 200 من الكاش إلى فودافون كاش\n• غير اسم محفظة ... إلى ...\n\n✏️ إدارة العمليات\n• عدل آخر مصروف وخليه 30 جنيه\n• احذف آخر مصروف\n• رجع آخر عملية محذوفة\n• آخر 5 عمليات\n\n📊 التحليل\n• ملخص النهاردة / الأسبوع / الشهر\n• أكتر حاجة صرفت عليها إيه؟\n• فاضلي كام من ميزانية الأكل؟\n• أقدر أصرف كام النهاردة؟\n• فلوسي هتكفيني لآخر الشهر؟\n\n🐷 الادخار\n• عايز أوفر 2000 الشهر ده\n• أوفر كام في اليوم؟\n• هدف التوفير واقعي؟\n\n🎙️ تقدر تبعت Voice بعملية مالية.\n📷 وتقدر تبعت صورة إيصال، ولو عايز محفظة معينة اكتب اسمها في Caption.\n\n🔐 أي عملية تغيّر فلوسك بتحتاج تأكيد قبل التنفيذ.`
+    );
+    return { handled: true };
+  }
+
   if (/^(رجع|استرجع).*عمليه محذوفه|رجع اخر عمليه محذوفه|استرجع اخر عمليه/.test(n)) {
     const deleted = (await loadTransactions(userId, true)).filter((tx) => tx.isDeleted === true && isStandalone(tx));
     if (!deleted.length) {
@@ -859,6 +1005,62 @@ export async function handleTelegramFinancialAssistantV2(input: HandlerInput): P
       walletName: wallet.nameAr || wallet.name,
     });
     await sendMessage(chatId, `🗑️ حذف محفظة جاهز للتأكيد:\n\n👛 ${wallet.nameAr || wallet.name}\n\nلن يتم الحذف إذا كان لها سجل عمليات.\n\nاكتب: تأكيد\nأو: إلغاء`);
+    return { handled: true };
+  }
+
+  const billPaymentRequest = parseBillPaymentRequest(text);
+  if (billPaymentRequest) {
+    const bills = await findBillCandidates(userId, billPaymentRequest.titleHint);
+    if (!bills.length) {
+      await sendMessage(chatId, '🧾 ملقتش فاتورة غير مدفوعة مطابقة للطلب. قول: عليا كام فواتير؟ عشان تشوف الفواتير الحالية.');
+      return { handled: true };
+    }
+
+    const walletMatch = await matchWalletForUser(userId, text);
+    if (walletMatch.ambiguous || !walletMatch.wallet) {
+      await sendMessage(chatId, '👛 مش قادر أحدد محفظة السداد بدقة. اكتب اسم المحفظة كما هو مسجل، مثال: دفعت فاتورة الكهرباء 200 جنيه من الكاش.');
+      return { handled: true };
+    }
+
+    if (bills.length > 1) {
+      await savePending(telegramUserId, {
+        actionType: 'v2_bill_select',
+        userId,
+        chatId,
+        requestedAmount: billPaymentRequest.amount ?? null,
+        originalText: text,
+        candidates: bills.map((bill: any) => ({ billId: bill.id, label: billLabel(bill) })),
+      });
+      await sendMessage(
+        chatId,
+        `🧾 لقيت أكتر من فاتورة مطابقة:\n\n${bills.map((bill: any, i: number) => `${i + 1}. ${billLabel(bill)}`).join('\n')}\n\nاكتب رقم الفاتورة، أو اكتب: إلغاء`
+      );
+      return { handled: true };
+    }
+
+    const bill: any = bills[0];
+    const remaining = billRemainingAmount(bill);
+    const requested = billPaymentRequest.amount ?? remaining;
+    if (requested > remaining + 0.000001) {
+      await sendMessage(chatId, `⚠️ طلبت سداد ${formatMoney(requested)} ج.م لكن المتبقي على الفاتورة ${formatMoney(remaining)} ج.م فقط.`);
+      return { handled: true };
+    }
+
+    await savePending(telegramUserId, {
+      actionType: 'v2_bill_payment',
+      userId,
+      chatId,
+      billId: bill.id,
+      billTitle: bill.titleAr || bill.title || 'فاتورة',
+      amount: requested,
+      remainingBefore: remaining,
+      walletId: walletMatch.wallet.id,
+      walletName: walletMatch.wallet.nameAr || walletMatch.wallet.name,
+    });
+    await sendMessage(
+      chatId,
+      `🧾 سداد فاتورة جاهز للتأكيد:\n\n${billLabel(bill)}\n\n💰 هتدفع: ${formatMoney(requested)} ج.م\n👛 من: ${walletMatch.wallet.nameAr || walletMatch.wallet.name}\n✅ المتبقي بعد السداد: ${formatMoney(Math.max(0, remaining - requested))} ج.م\n\nاكتب: تأكيد\nأو: إلغاء`
+    );
     return { handled: true };
   }
 

@@ -101,3 +101,78 @@ export async function parseVoiceCommandExpense(
     requiresConfirmation: true,
   };
 }
+
+
+export interface AudioTranscriptionResult {
+  success: boolean;
+  text?: string;
+  errorCode?: string;
+  errorDetails?: string;
+}
+
+export async function transcribeAudioWithGemini(
+  base64Audio: string,
+  mimeType: string = 'audio/ogg'
+): Promise<AudioTranscriptionResult> {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) {
+    return {
+      success: false,
+      errorCode: 'GEMINI_KEY_MISSING',
+      errorDetails: 'Gemini API key missing on server.',
+    };
+  }
+
+  const cleanBase64 = String(base64Audio || '').trim();
+  if (!cleanBase64) {
+    return {
+      success: false,
+      errorCode: 'EMPTY_AUDIO',
+      errorDetails: 'Audio payload is empty.',
+    };
+  }
+
+  try {
+    const ai = new GoogleGenAI({
+      apiKey,
+      httpOptions: {
+        headers: { 'User-Agent': 'aistudio-build' },
+      },
+    });
+
+    const response = await ai.models.generateContent({
+      model: AI_CONFIG.DEFAULT_MODEL,
+      contents: {
+        parts: [
+          {
+            inlineData: {
+              data: cleanBase64,
+              mimeType: mimeType || 'audio/ogg',
+            },
+          },
+          {
+            text: `حوّل الرسالة الصوتية إلى نص كما قاله المستخدم بدقة. الرسالة غالباً باللهجة المصرية وقد تحتوي على مبلغ مالي أو اسم محفظة أو فاتورة. أرجع النص المنطوق فقط بدون شرح أو علامات اقتباس.`,
+          },
+        ],
+      },
+    });
+
+    const text = String(response.text || '').trim();
+    if (!text) {
+      return {
+        success: false,
+        errorCode: 'EMPTY_TRANSCRIPTION',
+        errorDetails: 'Gemini returned an empty transcription.',
+      };
+    }
+
+    return { success: true, text };
+  } catch (err: any) {
+    console.error('Telegram audio transcription error:', err?.message || err);
+    return {
+      success: false,
+      errorCode: 'AUDIO_TRANSCRIPTION_FAILED',
+      errorDetails: err?.message || 'Unknown transcription error',
+    };
+  }
+}
