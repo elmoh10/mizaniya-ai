@@ -3147,11 +3147,38 @@ ${transaction.id}`
               if (
                 geminiInterpretation.intent === 'TRANSFER'
               ) {
+                // Gemini may understand a natural transfer phrase that the fast parser
+                // did not catch. Convert it to the canonical transfer text, then send it
+                // back through the SAME safe V2 pending-confirmation pipeline.
+                const canonicalTransferText =
+                  buildCanonicalFinancialText(
+                    geminiInterpretation,
+                    originalUserText
+                  );
+
+                const transferResult =
+                  await handleTelegramFinancialAssistantV2({
+                    userId: linkedUserId,
+                    telegramUserId,
+                    chatId,
+                    text: canonicalTransferText,
+                    sendMessage: sendTelegramMessage,
+                    markBudgetStale,
+                  });
+
+                if (transferResult.handled) {
+                  return res.status(200).json({
+                    success: true,
+                    received: true,
+                  });
+                }
+
                 await sendTelegramMessage(
                   chatId,
-                  `🔄 فهمت إنك عايز تعمل تحويل بين محافظك.
+                  `👛 فهمت إنك عايز تعمل تحويل، لكن محتاج أسماء المحافظ بشكل أوضح.
 
-ميزة التحويل من Telegram لسه مش مربوطة بالتنفيذ الآمن، ومش هنحرك أي رصيد من غير مسار تأكيد كامل.`
+مثال:
+حول 100 جنيه من فودافون كاش إلى الكاش`
                 );
 
                 return res.status(200).json({

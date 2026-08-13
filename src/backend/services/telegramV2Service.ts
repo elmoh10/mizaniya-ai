@@ -208,18 +208,39 @@ async function findBillCandidates(userId: string, hint: string): Promise<any[]> 
 }
 
 function parseTransfer(text: string): { amount: number; source: string; destination: string } | null {
-  const normalized = normalizeArabicText(text)
-    .replace(/\bلـ\b/g, ' الي ')
-    .replace(/\bالى\b/g, ' الي ');
+  // Accept Egyptian/Arabic transfer phrasing, including attached destination prefixes:
+  // "حول 100 جنيه من فودافون كاش للكاش"
+  // "حول 100 من الكاش لفودافون كاش"
+  // "حول 100 من الكاش إلى فودافون كاش"
+  let normalized = normalizeArabicText(text)
+    .replace(/الى/g, 'الي')
+    .replace(/لـ/g, 'ل');
+
+  // Arabic writes "to + the" as "لل..." (e.g. "للكاش"). Normalize it
+  // to a standalone destination separator while preserving the definite article.
+  normalized = normalized
+    .replace(/\s+لل(?=\S)/g, ' الي ال')
+    .replace(/\s+ل(?=\S)/g, ' الي ')
+    .replace(/\s+/g, ' ')
+    .trim();
 
   if (!/(حول|حولت|تحويل)/.test(normalized)) return null;
+
   const amount = parseAmount(text);
   if (!amount) return null;
 
-  const match = normalized.match(/(?:حول|حولت|تحويل).*?\d+(?:[.,]\d+)?(?:\s*جنيه)?\s+من\s+(.+?)\s+(?:الي|ل)\s+(.+)$/);
+  const match = normalized.match(
+    /(?:حول|حولت|تحويل).*?\d+(?:[.,]\d+)?(?:\s*جنيه)?\s+من\s+(.+?)\s+الي\s+(.+)$/
+  );
+
   if (!match) return null;
 
-  return { amount, source: match[1].trim(), destination: match[2].trim() };
+  const source = match[1].trim();
+  const destination = match[2].trim();
+
+  if (!source || !destination) return null;
+
+  return { amount, source, destination };
 }
 
 
