@@ -119,6 +119,14 @@ export class SubscriptionRepository {
     await docRef.set(newSub, { merge: true });
     return newSub;
   }
+
+  async deleteSubscription(userId: string, subscriptionId: string): Promise<boolean> {
+    const ref = this.getCollection(userId).doc(subscriptionId);
+    const snap = await ref.get();
+    if (!snap.exists) return false;
+    await ref.delete();
+    return true;
+  }
 }
 
 export class AIMemoryRepository {

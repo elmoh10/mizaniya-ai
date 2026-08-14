@@ -13,6 +13,8 @@ import {
   CheckCircle2,
   AlertCircle,
   Building2,
+  Pencil,
+  Trash2,
 } from 'lucide-react';
 
 interface WalletsViewProps {
@@ -117,6 +119,25 @@ export const WalletsView: React.FC<WalletsViewProps> = ({
     }
   };
 
+  const handleEditWallet = async (wallet: Wallet) => {
+    const newName = window.prompt(isAr ? 'اسم المحفظة الجديد' : 'New wallet name', wallet.name);
+    if (newName === null || !newName.trim()) return;
+    const balanceText = window.prompt(isAr ? 'الرصيد الحالي' : 'Current balance', String(wallet.balance ?? 0));
+    if (balanceText === null) return;
+    const balance = Number(balanceText);
+    if (!Number.isFinite(balance)) { setErrorMsg(isAr ? 'الرصيد غير صحيح' : 'Invalid balance'); return; }
+    const res = await apiClient.patch(`/wallets/${wallet.id}`, { name:newName.trim(), nameAr:newName.trim(), balance });
+    if (res.success) { setSuccessMsg(isAr ? 'تم تعديل المحفظة.' : 'Wallet updated.'); await onRefreshWallets(); }
+    else setErrorMsg(res.error || (isAr ? 'فشل تعديل المحفظة' : 'Update failed'));
+  };
+
+  const handleDeleteWallet = async (wallet: Wallet) => {
+    if (!window.confirm(isAr ? `حذف محفظة ${wallet.name}؟ لن يتم حذف سجل المعاملات.` : `Delete ${wallet.name}? Transaction history will remain.`)) return;
+    const res = await apiClient.delete(`/wallets/${wallet.id}`);
+    if (res.success) { setSuccessMsg(isAr ? 'تم حذف المحفظة.' : 'Wallet deleted.'); await onRefreshWallets(); }
+    else setErrorMsg(res.error || (isAr ? 'فشل حذف المحفظة' : 'Delete failed'));
+  };
+
   const totalBalance = wallets.reduce((acc, w) => acc + (w.balance || 0), 0);
 
   return (
@@ -195,6 +216,11 @@ export const WalletsView: React.FC<WalletsViewProps> = ({
                     Acc: **** {wallet.accountNumber.slice(-4)}
                   </p>
                 )}
+
+                <div className="flex items-center gap-2">
+                  <button onClick={() => handleEditWallet(wallet)} className="flex-1 px-3 py-2 rounded-xl bg-sky-500/10 text-sky-500 text-xs font-bold flex items-center justify-center gap-1"><Pencil className="w-3.5 h-3.5" />{isAr ? 'تعديل' : 'Edit'}</button>
+                  <button onClick={() => handleDeleteWallet(wallet)} className="flex-1 px-3 py-2 rounded-xl bg-rose-500/10 text-rose-500 text-xs font-bold flex items-center justify-center gap-1"><Trash2 className="w-3.5 h-3.5" />{isAr ? 'حذف' : 'Delete'}</button>
+                </div>
 
                 <div className="pt-2 border-t border-slate-100 dark:border-slate-800/80 flex items-center justify-between">
                   <span className="text-xs text-slate-500 dark:text-slate-400">{isAr ? 'الرصيد المتاح' : 'Available Balance'}</span>

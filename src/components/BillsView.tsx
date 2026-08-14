@@ -18,6 +18,7 @@ import {
   Sparkles,
   X,
   AlertTriangle,
+  Trash2,
 } from 'lucide-react';
 
 interface BillsViewProps {
@@ -61,6 +62,15 @@ export const BillsView: React.FC<BillsViewProps> = ({
   const [subCycle, setSubCycle] = useState<'monthly' | 'yearly'>('monthly');
   const [subNextDueDate, setSubNextDueDate] = useState('');
   const [subPaymentMethod, setSubPaymentMethod] = useState<PaymentMethod>('Visa/Mastercard');
+
+  const handleDeleteSubscription = async (id: string) => {
+    if (!window.confirm(isAr ? 'هل تريد حذف هذا الاشتراك نهائيًا؟' : 'Delete this subscription?')) return;
+    const res = await apiClient.delete(`/subscriptions/${id}`);
+    if (res.success) {
+      setStatusMsg({ type: 'success', text: isAr ? 'تم حذف الاشتراك بنجاح.' : 'Subscription deleted.' });
+      onRefreshSubscriptions?.();
+    } else setStatusMsg({ type: 'error', text: res.error || (isAr ? 'فشل حذف الاشتراك.' : 'Delete failed.') });
+  };
 
   const handleCopyFawry = (code?: string) => {
     if (!code) return;
@@ -394,8 +404,9 @@ export const BillsView: React.FC<BillsViewProps> = ({
                   </span>
                 </div>
 
-                <div className="text-left font-black text-sm text-slate-900 dark:text-white">
-                  {formatCurrency(s.amount, 'EGP', lang)}
+                <div className="flex items-center gap-2">
+                  <div className="text-left font-black text-sm text-slate-900 dark:text-white">{formatCurrency(s.amount, 'EGP', lang)}</div>
+                  <button onClick={() => handleDeleteSubscription(s.id)} className="p-2 rounded-lg bg-rose-500/10 text-rose-500 hover:bg-rose-500/20" title={isAr ? 'حذف الاشتراك' : 'Delete subscription'}><Trash2 className="w-4 h-4" /></button>
                 </div>
               </div>
             ))}

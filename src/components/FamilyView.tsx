@@ -1,52 +1,15 @@
-import React from 'react';
-import { Users, Lock, ShieldAlert } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { Users, Lock, Plus, Trash2 } from 'lucide-react';
+import { apiClient } from '../services/apiClient';
+import { FamilyMember } from '../types';
 
-interface FamilyViewProps {
-  lang: 'ar' | 'en';
-  enabled?: boolean;
-}
-
-export const FamilyView: React.FC<FamilyViewProps> = ({ lang, enabled = false }) => {
-  const isAr = lang === 'ar';
-
-  if (!enabled) {
-    return (
-      <div className="p-8 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm text-center space-y-4 my-8" dir="rtl">
-        <div className="w-16 h-16 bg-amber-500/10 rounded-2xl flex items-center justify-center mx-auto text-amber-500">
-          <Lock className="w-8 h-8" />
-        </div>
-        <h3 className="text-xl font-bold text-slate-900 dark:text-white">
-          {isAr ? 'الميزانية العائلية قيد التطوير والترخيص' : 'Family Wallet is Coming Soon'}
-        </h3>
-        <p className="text-xs text-slate-500 dark:text-slate-400 max-w-md mx-auto leading-relaxed">
-          {isAr
-            ? 'ميزة مشاركة المحافظ والمصروفات مع أفراد العائلة والأبناء معطلة حالياً بحسب إعدادات النظام وستكون متاحة فور اكتمال تراخيص البنك المركزي.'
-            : 'Family budget sharing is currently disabled under remote configuration and will be enabled upon regulatory approval.'}
-        </p>
-      </div>
-    );
-  }
-
-  return (
-    <div className="space-y-6 pb-20 lg:pb-8 animate-fadeIn" dir="rtl">
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-2xl font-black text-slate-900 dark:text-white flex items-center gap-2">
-            <Users className="w-7 h-7 text-indigo-600" />
-            <span>{isAr ? 'حساب إدارة الميزانية العائلية' : 'Family Finance & Shared Wallet'}</span>
-          </h2>
-          <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-            {isAr
-              ? 'إدارة مصروف المنزل، حدود مصروف الأبناء، والتحكم في صلاحيات العائلة'
-              : 'Household budget management, children allowances, and permissions'}
-          </p>
-        </div>
-      </div>
-
-      <div className="p-12 text-center text-slate-400 border border-dashed border-slate-300 dark:border-slate-800 rounded-3xl">
-        <Users className="w-12 h-12 mx-auto mb-3 opacity-40" />
-        <p className="text-sm font-bold">{isAr ? 'لا يوجد أفراد عائلة مضافين حالياً' : 'No family members added yet'}</p>
-      </div>
-    </div>
-  );
+interface FamilyViewProps { lang:'ar'|'en'; enabled?:boolean; }
+export const FamilyView: React.FC<FamilyViewProps> = ({lang,enabled=false}) => {
+ const isAr=lang==='ar'; const [members,setMembers]=useState<FamilyMember[]>([]); const [loading,setLoading]=useState(false); const [msg,setMsg]=useState('');
+ const load=async()=>{ if(!enabled)return; const r=await apiClient.get('/family-members'); if(r.success)setMembers(r.members||[]); };
+ useEffect(()=>{load();},[enabled]);
+ const add=async()=>{ const name=window.prompt(isAr?'اسم فرد العائلة':'Family member name'); if(!name?.trim())return; const role=(window.prompt(isAr?'الدور: Parent / Spouse / Child / Viewer':'Role: Parent / Spouse / Child / Viewer','Viewer')||'Viewer') as FamilyMember['role']; const allowance=Number(window.prompt(isAr?'المصروف الشهري (0 لو بدون)':'Monthly allowance','0')||0); setLoading(true); const r=await apiClient.post('/family-members',{name:name.trim(),role,monthlyAllowance:allowance,permissions:{canAddExpense:role!=='Viewer',canViewAllWallets:role==='Parent'||role==='Spouse',requiresApproval:role==='Child'}}); setLoading(false); if(r.success){setMsg(isAr?'تمت إضافة فرد العائلة بنجاح':'Family member added');await load();}else setMsg(r.error||'Error'); };
+ const remove=async(id:string)=>{if(!window.confirm(isAr?'حذف فرد العائلة؟':'Remove family member?'))return; const r=await apiClient.delete(`/family-members/${id}`); if(r.success)await load(); else setMsg(r.error||'Error');};
+ if(!enabled)return <div className="p-8 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-center space-y-4 my-8" dir="rtl"><Lock className="w-8 h-8 mx-auto text-amber-500"/><h3 className="text-xl font-bold">{isAr?'الميزانية العائلية غير مفعلة':'Family Wallet disabled'}</h3></div>;
+ return <div className="space-y-6 pb-20 lg:pb-8" dir="rtl"><div className="flex items-center justify-between"><div><h2 className="text-2xl font-black text-slate-900 dark:text-white flex gap-2"><Users className="w-7 h-7 text-indigo-600"/>{isAr?'حساب إدارة الميزانية العائلية':'Family Finance'}</h2><p className="text-xs text-slate-500 mt-1">{isAr?'إدارة أفراد العائلة والمصروف والصلاحيات':'Manage family members, allowances and permissions'}</p></div><button disabled={loading} onClick={add} className="px-4 py-2.5 bg-emerald-600 text-white rounded-xl font-bold text-sm flex gap-2"><Plus className="w-4 h-4"/>{isAr?'إضافة فرد':'Add member'}</button></div>{msg&&<div className="p-3 rounded-xl bg-emerald-500/10 text-emerald-500 text-sm">{msg}</div>}{members.length===0?<div className="p-12 text-center text-slate-400 border border-dashed border-slate-700 rounded-3xl"><Users className="w-12 h-12 mx-auto mb-3 opacity-40"/><p className="text-sm font-bold">{isAr?'لا يوجد أفراد عائلة مضافين حالياً':'No family members added yet'}</p><button onClick={add} className="mt-4 px-4 py-2 bg-indigo-600 text-white rounded-xl">{isAr?'إضافة أول فرد':'Add first member'}</button></div>:<div className="grid md:grid-cols-2 gap-4">{members.map(m=><div key={m.id} className="p-5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-800 flex justify-between items-center"><div><div className="font-black text-slate-900 dark:text-white">{m.name}</div><div className="text-xs text-slate-400">{m.role} • {Number(m.monthlyAllowance||0).toLocaleString()} EGP</div></div><button onClick={()=>remove(m.id)} className="p-2 rounded-lg bg-rose-500/10 text-rose-500"><Trash2 className="w-4 h-4"/></button></div>)}</div>}</div>;
 };

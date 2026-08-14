@@ -115,10 +115,7 @@ export async function deleteObligation(userId: string, obligationId: string) {
     .doc(userId)
     .collection('obligations')
     .doc(obligationId)
-    .update({
-      status: 'ARCHIVED',
-      updatedAt: FieldValue.serverTimestamp(),
-    });
+    .delete();
 }
 
 export async function completeObligation(userId: string, obligationId: string) {

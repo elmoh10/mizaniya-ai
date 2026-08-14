@@ -25,6 +25,7 @@ import {
 } from '../services/walletService';
 
 import { transactionRepository } from '../repositories/transactionRepository';
+import { walletRepository } from '../repositories/walletRepository';
 
 import {
   budgetRepository,
@@ -1041,6 +1042,26 @@ router.post(
   }
 );
 
+router.patch('/wallets/:id', async (req: AuthenticatedRequest, res) => {
+  try {
+    const wallet = await walletRepository.updateWallet(req.user!.uid, req.params.id, req.body);
+    if (!wallet) return res.status(404).json({success:false,error:'Wallet not found'});
+    await markBudgetStale(req.user!.uid);
+    return res.json({success:true,wallet});
+  } catch(err:any) { return res.status(500).json({success:false,error:'Failed to update wallet',details:err.message}); }
+});
+router.delete('/wallets/:id', async (req: AuthenticatedRequest, res) => {
+  try {
+    const wallet = await walletRepository.getWallet(req.user!.uid, req.params.id);
+    if (!wallet) return res.status(404).json({success:false,error:'Wallet not found'});
+    const active = await walletRepository.getWallets(req.user!.uid);
+    if (active.length <= 1) return res.status(400).json({success:false,error:'Cannot delete the last wallet'});
+    const ok = await walletRepository.archiveWallet(req.user!.uid, req.params.id);
+    await markBudgetStale(req.user!.uid);
+    return res.json({success:ok,id:req.params.id});
+  } catch(err:any) { return res.status(500).json({success:false,error:'Failed to delete wallet',details:err.message}); }
+});
+
 router.post(
   '/wallets/sync-instapay',
   async (
@@ -2018,6 +2039,42 @@ router.post(
     }
   }
 );
+
+router.delete('/subscriptions/:id', async (req: AuthenticatedRequest, res) => {
+  try {
+    const deleted = await subscriptionRepository.deleteSubscription(req.user!.uid, req.params.id);
+    if (!deleted) return res.status(404).json({ success: false, error: 'Subscription not found' });
+    await markBudgetStale(req.user!.uid);
+    return res.json({ success: true, id: req.params.id });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: 'Failed to delete subscription', details: err.message });
+  }
+});
+
+// Family members
+router.get('/family-members', async (req: AuthenticatedRequest, res) => {
+  const snap = await db.collection('users').doc(req.user!.uid).collection('familyMembers').get();
+  return res.json({ success: true, members: snap.docs.map(d => ({ id: d.id, ...d.data() })) });
+});
+router.post('/family-members', async (req: AuthenticatedRequest, res) => {
+  try {
+    const name = String(req.body?.name || '').trim();
+    if (!name) return res.status(400).json({ success:false, error:'Name is required' });
+    const ref = db.collection('users').doc(req.user!.uid).collection('familyMembers').doc();
+    const member = { id: ref.id, name, role: req.body?.role || 'Viewer', monthlyAllowance: Number(req.body?.monthlyAllowance || 0), spentThisMonth: 0, avatar: req.body?.avatar || '', permissions: req.body?.permissions || { canAddExpense:false, canViewAllWallets:false, requiresApproval:true }, createdAt: new Date().toISOString() };
+    await ref.set(member);
+    return res.status(201).json({ success:true, member });
+  } catch (err:any) { return res.status(500).json({success:false,error:'Failed to add family member',details:err.message}); }
+});
+router.patch('/family-members/:id', async (req: AuthenticatedRequest, res) => {
+  const ref = db.collection('users').doc(req.user!.uid).collection('familyMembers').doc(req.params.id);
+  await ref.set({ ...req.body, id:req.params.id, updatedAt:new Date().toISOString() }, { merge:true });
+  return res.json({ success:true, id:req.params.id });
+});
+router.delete('/family-members/:id', async (req: AuthenticatedRequest, res) => {
+  await db.collection('users').doc(req.user!.uid).collection('familyMembers').doc(req.params.id).delete();
+  return res.json({ success:true, id:req.params.id });
+});
 
 // ============================================================
 // System Feature Flags
