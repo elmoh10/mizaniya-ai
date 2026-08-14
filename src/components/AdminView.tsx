@@ -38,6 +38,7 @@ export const AdminView: React.FC<AdminViewProps> = ({ onClose, lang, onFlagsChan
   const [loading, setLoading] = useState<boolean>(true);
   const [saving, setSaving] = useState<boolean>(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [usersError, setUsersError] = useState<string | null>(null);
 
   useEffect(() => {
     setLoading(true);
@@ -57,8 +58,10 @@ export const AdminView: React.FC<AdminViewProps> = ({ onClose, lang, onFlagsChan
         }
         if (usersRes.success) {
           setUsers(usersRes.users || []);
+          setUsersError(null);
         } else {
           setUsers([]);
+          setUsersError(usersRes.details || usersRes.error || (isAr ? 'تعذر تحميل مستخدمي Firebase Authentication' : 'Failed to load Firebase Authentication users'));
         }
       })
       .catch((err) => {
@@ -186,8 +189,13 @@ export const AdminView: React.FC<AdminViewProps> = ({ onClose, lang, onFlagsChan
           </h3>
           <div className="rounded-2xl border border-slate-200 dark:border-slate-700 overflow-hidden">
             <div className="max-h-56 overflow-y-auto divide-y divide-slate-200 dark:divide-slate-800">
-              {users.length === 0 ? (
-                <div className="p-4 text-center text-xs text-slate-400">{isAr ? 'لا توجد بيانات مستخدمين متاحة.' : 'No user data available.'}</div>
+              {usersError ? (
+                <div className="p-4 text-center text-xs text-rose-500">
+                  <div className="font-bold mb-1">{isAr ? 'تعذر تحميل دليل المستخدمين' : 'User directory unavailable'}</div>
+                  <div className="text-[10px] text-slate-400 break-words">{usersError}</div>
+                </div>
+              ) : users.length === 0 ? (
+                <div className="p-4 text-center text-xs text-slate-400">{isAr ? 'لا يوجد مستخدمون في Firebase Authentication.' : 'No Firebase Authentication users found.'}</div>
               ) : users.map((u) => (
                 <div key={u.uid} className="p-3 flex items-center justify-between gap-3 bg-white dark:bg-slate-900">
                   <div className="min-w-0">

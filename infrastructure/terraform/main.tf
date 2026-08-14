@@ -198,6 +198,14 @@ resource "google_project_iam_member" "firestore_user" {
   member  = "serviceAccount:${google_service_account.app_sa.email}"
 }
 
+# Read-only Firebase Authentication access for the Admin user directory.
+# Required by Firebase Admin SDK auth.listUsers() in /api/v1/admin/users.
+resource "google_project_iam_member" "firebase_auth_viewer" {
+  project = var.gcp_project_id
+  role    = "roles/firebaseauth.viewer"
+  member  = "serviceAccount:${google_service_account.app_sa.email}"
+}
+
 resource "google_project_iam_member" "pubsub_publisher" {
   project = var.gcp_project_id
   role    = "roles/pubsub.publisher"
@@ -324,6 +332,7 @@ resource "google_cloud_run_v2_service" "mizaniya_app" {
     google_secret_manager_secret_iam_member.telegram_webhook_secret_accessor,
 
     google_project_iam_member.firestore_user,
+    google_project_iam_member.firebase_auth_viewer,
     google_project_iam_member.pubsub_publisher,
     google_project_iam_member.cloudtasks_enqueuer,
     google_project_iam_member.bigquery_data_editor
