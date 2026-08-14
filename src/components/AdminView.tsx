@@ -8,14 +8,18 @@ import {
   X,
   Sparkles,
   AlertCircle,
+  Users,
+  ShieldCheck,
+  Clock3,
 } from 'lucide-react';
 
 interface AdminViewProps {
   onClose: () => void;
   lang: 'ar' | 'en';
+  onFlagsChanged?: (flags: FeatureFlags) => void;
 }
 
-export const AdminView: React.FC<AdminViewProps> = ({ onClose, lang }) => {
+export const AdminView: React.FC<AdminViewProps> = ({ onClose, lang, onFlagsChanged }) => {
   const isAr = lang === 'ar';
 
   const [flags, setFlags] = useState<FeatureFlags>({
@@ -26,10 +30,11 @@ export const AdminView: React.FC<AdminViewProps> = ({ onClose, lang }) => {
     aiAutoBudget: true,
     geminiProRouting: true,
     whatsappIntegration: false,
-    instapayDirectSync: true,
+    instapayDirectSync: false,
   });
 
   const [stats, setStats] = useState<any>(null);
+  const [users, setUsers] = useState<any[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [saving, setSaving] = useState<boolean>(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -39,8 +44,9 @@ export const AdminView: React.FC<AdminViewProps> = ({ onClose, lang }) => {
     Promise.all([
       apiClient.get('/system-config'),
       apiClient.get('/admin/metrics'),
+      apiClient.get('/admin/users'),
     ])
-      .then(([configRes, metricsRes]) => {
+      .then(([configRes, metricsRes, usersRes]) => {
         if (configRes.success && configRes.flags) {
           setFlags(configRes.flags);
         }
@@ -48,6 +54,11 @@ export const AdminView: React.FC<AdminViewProps> = ({ onClose, lang }) => {
           setStats(metricsRes.metrics);
         } else {
           setStats(null);
+        }
+        if (usersRes.success) {
+          setUsers(usersRes.users || []);
+        } else {
+          setUsers([]);
         }
       })
       .catch((err) => {
@@ -65,6 +76,7 @@ export const AdminView: React.FC<AdminViewProps> = ({ onClose, lang }) => {
       const res = await apiClient.post('/system-config', { flags: targetFlags });
       if (res.success && res.flags) {
         setFlags(res.flags);
+        onFlagsChanged?.(res.flags);
       } else {
         setErrorMessage(res.error || (isAr ? 'فشل حفظ التغييرات في النظام' : 'Failed to save system config'));
       }
@@ -140,9 +152,61 @@ export const AdminView: React.FC<AdminViewProps> = ({ onClose, lang }) => {
         ) : (
           <div className="p-4 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-500 text-xs flex items-center justify-center gap-2">
             <AlertCircle className="w-4 h-4" />
-            <span>Data unavailable</span>
+            <span>{isAr ? 'تعذر تحميل مؤشرات النظام' : 'System metrics unavailable'}</span>
           </div>
         )}
+
+        {/* Platform Snapshot */}
+        {stats && (
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+            <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700/60">
+              <span className="text-slate-400 block">{isAr ? 'المحافظ' : 'Wallets'}</span>
+              <span className="text-base font-bold text-sky-500">{stats.wallets ?? 0}</span>
+            </div>
+            <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700/60">
+              <span className="text-slate-400 block">{isAr ? 'الفواتير' : 'Bills'}</span>
+              <span className="text-base font-bold text-amber-500">{stats.bills ?? 0}</span>
+            </div>
+            <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700/60">
+              <span className="text-slate-400 block">{isAr ? 'البيئة' : 'Environment'}</span>
+              <span className="text-sm font-bold text-slate-700 dark:text-slate-200">{stats.environment || '-'}</span>
+            </div>
+            <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700/60">
+              <span className="text-slate-400 block">{isAr ? 'وقت التشغيل' : 'Uptime'}</span>
+              <span className="text-sm font-bold text-slate-700 dark:text-slate-200">{Math.floor((stats.uptimeSeconds || 0) / 60)}m</span>
+            </div>
+          </div>
+        )}
+
+        {/* User Directory */}
+        <div className="space-y-3">
+          <h3 className="font-bold text-sm text-slate-900 dark:text-white flex items-center gap-2">
+            <Users className="w-4 h-4 text-cyan-500" />
+            <span>{isAr ? 'المستخدمون المسجلون' : 'Registered Users'}</span>
+          </h3>
+          <div className="rounded-2xl border border-slate-200 dark:border-slate-700 overflow-hidden">
+            <div className="max-h-56 overflow-y-auto divide-y divide-slate-200 dark:divide-slate-800">
+              {users.length === 0 ? (
+                <div className="p-4 text-center text-xs text-slate-400">{isAr ? 'لا توجد بيانات مستخدمين متاحة.' : 'No user data available.'}</div>
+              ) : users.map((u) => (
+                <div key={u.uid} className="p-3 flex items-center justify-between gap-3 bg-white dark:bg-slate-900">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="font-bold text-xs text-slate-900 dark:text-white truncate">{u.displayName || u.email || u.uid}</span>
+                      {u.role === 'admin' && <ShieldCheck className="w-3.5 h-3.5 text-emerald-500 shrink-0" />}
+                      {u.disabled && <span className="text-[9px] px-1.5 py-0.5 rounded bg-rose-500/10 text-rose-500">{isAr ? 'معطل' : 'Disabled'}</span>}
+                    </div>
+                    <div className="text-[10px] text-slate-400 truncate">{u.email || u.uid}</div>
+                  </div>
+                  <div className="text-[10px] text-slate-400 text-left shrink-0">
+                    <div className="flex items-center gap-1"><Clock3 className="w-3 h-3" />{u.lastSignInAt ? new Date(u.lastSignInAt).toLocaleDateString(isAr ? 'ar-EG' : 'en-US') : '-'}</div>
+                    <div>{u.role === 'admin' ? 'Admin' : 'User'}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
 
         {/* Feature Flags Toggles */}
         <div className="space-y-3">

@@ -1,4 +1,4 @@
-import { getCurrentIdToken } from '../config/firebaseClient';
+import { getCurrentIdToken, getCurrentAppCheckToken } from '../config/firebaseClient';
 
 const API_BASE = '/api/v1';
 
@@ -14,7 +14,10 @@ export async function apiRequest<T = any>(
   endpoint: string,
   options: RequestInit = {}
 ): Promise<ApiResponse<T>> {
-  const token = await getCurrentIdToken();
+  const [token, appCheckToken] = await Promise.all([
+    getCurrentIdToken(),
+    getCurrentAppCheckToken(),
+  ]);
 
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -23,6 +26,10 @@ export async function apiRequest<T = any>(
 
   if (token) {
     headers['Authorization'] = `Bearer ${token}`;
+  }
+
+  if (appCheckToken) {
+    headers['X-Firebase-AppCheck'] = appCheckToken;
   }
 
   const cleanEndpoint = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;

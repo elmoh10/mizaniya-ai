@@ -90,7 +90,7 @@ import {
 } from '../validators/schemas';
 
 import { routeAgentQuery } from '../../ai/supervisor';
-import { db } from '../config/firebaseAdmin';
+import { db, auth } from '../config/firebaseAdmin';
 
 const router = Router();
 
@@ -2206,6 +2206,45 @@ router.get(
       });
     } catch (err: any) {
       return res.status(500).json({ error: 'Failed to load admin metrics', details: err.message });
+    }
+  }
+);
+
+// ============================================================
+// Admin User Directory (read-only)
+// ============================================================
+
+router.get(
+  '/admin/users',
+  requireAdmin as any,
+  async (_req, res) => {
+    try {
+      const result = await auth.listUsers(1000);
+      const users = result.users.map((user) => ({
+        uid: user.uid,
+        email: user.email || null,
+        displayName: user.displayName || null,
+        disabled: user.disabled,
+        emailVerified: user.emailVerified,
+        role:
+          user.customClaims?.admin === true ||
+          user.customClaims?.role === 'admin'
+            ? 'admin'
+            : 'user',
+        createdAt: user.metadata.creationTime || null,
+        lastSignInAt: user.metadata.lastSignInTime || null,
+      }));
+
+      return res.json({
+        success: true,
+        users,
+        count: users.length,
+      });
+    } catch (err: any) {
+      return res.status(500).json({
+        error: 'Failed to load admin users',
+        details: err.message,
+      });
     }
   }
 );

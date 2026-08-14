@@ -20,13 +20,23 @@ import { AuthView } from './components/AuthView';
 
 import { auth, onAuthStateChanged, firebaseSignOut, User } from './config/firebaseClient';
 import { apiClient } from './services/apiClient';
-import { Wallet, Transaction, Budget, Goal, Bill, Subscription, HealthScoreBreakdown, InsightTimelineItem } from './types';
+import { Wallet, Transaction, Budget, Goal, Bill, Subscription, HealthScoreBreakdown, InsightTimelineItem, FeatureFlags } from './types';
 import { AlertCircle, RefreshCw } from 'lucide-react';
 
 export function App() {
   const [lang, setLang] = useState<'ar' | 'en'>('ar');
   const [darkMode, setDarkMode] = useState<boolean>(true);
   const [emergencyMode, setEmergencyMode] = useState<boolean>(false);
+  const [featureFlags, setFeatureFlags] = useState<FeatureFlags>({
+    voiceAssistant: true,
+    emergencyMode: true,
+    familyWallet: false,
+    ocrReceiptScanner: true,
+    aiAutoBudget: true,
+    geminiProRouting: true,
+    whatsappIntegration: false,
+    instapayDirectSync: false,
+  });
   const [activeTab, setActiveTab] = useState<NavTab>('dashboard');
 
   // Auth State
@@ -106,7 +116,7 @@ export function App() {
     setDataError(null);
 
     try {
-      const [walletsRes, txsRes, budgetRes, goalsRes, billsRes, subscriptionsRes, healthRes, insightsRes, notificationsRes] = await Promise.all([
+      const [walletsRes, txsRes, budgetRes, goalsRes, billsRes, subscriptionsRes, healthRes, insightsRes, notificationsRes, configRes] = await Promise.all([
         apiClient.get('/wallets'),
         apiClient.get('/transactions'),
         apiClient.get('/budgets/current'),
@@ -116,6 +126,7 @@ export function App() {
         apiClient.get('/financial-health'),
         apiClient.get('/smart-insights'),
         apiClient.get('/notifications'),
+        apiClient.get('/system-config'),
       ]);
 
       if (walletsRes.success) setWallets(walletsRes.wallets || []);
@@ -126,6 +137,7 @@ export function App() {
       if (subscriptionsRes.success) setSubscriptions(subscriptionsRes.subscriptions || []);
       if (insightsRes?.success && insightsRes.data?.timeline) setTimeline(insightsRes.data.timeline);
       if (notificationsRes?.success) { setNotifications(notificationsRes.notifications || []); setUnreadNotifications(notificationsRes.unreadCount || 0); }
+      if (configRes?.success && configRes.flags) setFeatureFlags(configRes.flags);
       if (healthRes.success && healthRes.status === 'CALCULATED' && healthRes.score) {
         setHealthScore(healthRes.score);
       } else {
@@ -246,6 +258,8 @@ export function App() {
         setEmergencyMode={setEmergencyMode}
         onOpenAdmin={() => setShowAdminModal(true)}
         onOpenVoice={() => setActiveTab('transactions')}
+        voiceEnabled={featureFlags.voiceAssistant}
+        emergencyEnabled={featureFlags.emergencyMode}
         unreadAlertsCount={unreadNotifications}
         onOpenNotifications={() => setShowNotifications(true)}
         isAdmin={userRole === 'admin'}
@@ -315,6 +329,8 @@ export function App() {
                   onNavigateTab={(tab) => setActiveTab(tab)}
                   onOpenVoice={() => setActiveTab('transactions')}
                   onOpenScan={() => setActiveTab('transactions')}
+                  voiceEnabled={featureFlags.voiceAssistant}
+                  ocrEnabled={featureFlags.ocrReceiptScanner}
                 />
               )}
 
@@ -324,6 +340,8 @@ export function App() {
                   wallets={wallets}
                   onAddTransaction={handleAddTransaction}
                   lang={lang}
+                  voiceEnabled={featureFlags.voiceAssistant}
+                  ocrEnabled={featureFlags.ocrReceiptScanner}
                 />
               )}
 
@@ -376,7 +394,7 @@ export function App() {
                 <HealthScoreView healthScore={healthScore} lang={lang} />
               )}
 
-              {activeTab === 'family' && <FamilyView lang={lang} enabled={false} />}
+              {activeTab === 'family' && <FamilyView lang={lang} enabled={featureFlags.familyWallet} />}
 
               {activeTab === 'reports' && (
                 <ReportsView transactions={transactions} budget={budget} lang={lang} />
@@ -397,7 +415,7 @@ export function App() {
 
       {/* Admin Dashboard Modal */}
       {showAdminModal && (
-        <AdminView onClose={() => setShowAdminModal(false)} lang={lang} />
+        <AdminView onClose={() => setShowAdminModal(false)} lang={lang} onFlagsChanged={setFeatureFlags} />
       )}
     </div>
   );

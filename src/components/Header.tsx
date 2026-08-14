@@ -22,6 +22,8 @@ interface HeaderProps {
   setEmergencyMode: (e: boolean) => void;
   onOpenAdmin: () => void;
   onOpenVoice: () => void;
+  voiceEnabled?: boolean;
+  emergencyEnabled?: boolean;
   unreadAlertsCount: number;
   onOpenNotifications?: () => void;
   isAdmin?: boolean;
@@ -40,6 +42,8 @@ export const Header: React.FC<HeaderProps> = ({
   setEmergencyMode,
   onOpenAdmin,
   onOpenVoice,
+  voiceEnabled = true,
+  emergencyEnabled = true,
   unreadAlertsCount,
   onOpenNotifications,
   isAdmin = false,
@@ -102,7 +106,7 @@ export const Header: React.FC<HeaderProps> = ({
         {/* Action Controls */}
         <div className="flex items-center gap-2 sm:gap-3">
           {/* Quick Voice Logging Button */}
-          <button
+          {voiceEnabled && <button
             onClick={onOpenVoice}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-50 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 text-xs font-semibold hover:bg-emerald-100 dark:hover:bg-emerald-900 transition shadow-sm"
             title={isAr ? 'تسجيل صوتی بالعامية المصرية' : 'Voice Assistant'}
@@ -111,10 +115,10 @@ export const Header: React.FC<HeaderProps> = ({
             <span className="hidden md:inline">
               {isAr ? 'تسجيل صوتي' : 'Voice Expense'}
             </span>
-          </button>
+          </button>}
 
           {/* Emergency Mode Toggle */}
-          <button
+          {emergencyEnabled && <button
             onClick={() => setEmergencyMode(!emergencyMode)}
             className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold transition ${
               emergencyMode
@@ -132,7 +136,7 @@ export const Header: React.FC<HeaderProps> = ({
                 ? 'وضع الطوارئ'
                 : 'Emergency Mode'}
             </span>
-          </button>
+          </button>}
 
           {/* Admin Dashboard (Visible only for admins) */}
           {isAdmin && (

@@ -38,6 +38,8 @@ interface DashboardViewProps {
   onNavigateTab: (tab: any) => void;
   onOpenVoice: () => void;
   onOpenScan: () => void;
+  voiceEnabled?: boolean;
+  ocrEnabled?: boolean;
 }
 
 export const DashboardView: React.FC<DashboardViewProps> = ({
@@ -52,6 +54,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   onNavigateTab,
   onOpenVoice,
   onOpenScan,
+  voiceEnabled = true,
+  ocrEnabled = true,
 }) => {
   const isAr = lang === 'ar';
 
@@ -99,20 +103,20 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
           {/* Quick AI Voice & Receipt Actions */}
           <div className="flex items-center gap-3">
-            <button
+            {ocrEnabled && <button
               onClick={onOpenScan}
               className="flex-1 md:flex-initial flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-sm shadow-lg shadow-emerald-600/30 transition transform hover:-translate-y-0.5"
             >
               <Scan className="w-4 h-4" />
               <span>{isAr ? 'مسح فاتورة OCR' : 'Scan Receipt'}</span>
-            </button>
-            <button
+            </button>}
+            {voiceEnabled && <button
               onClick={onOpenVoice}
               className="flex-1 md:flex-initial flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-white/10 hover:bg-white/20 text-white font-bold text-sm backdrop-blur-md border border-white/20 transition transform hover:-translate-y-0.5"
             >
               <Volume2 className="w-4 h-4 text-emerald-400 animate-pulse" />
               <span>{isAr ? 'أمر صوتی' : 'Voice Input'}</span>
-            </button>
+            </button>}
           </div>
         </div>
 

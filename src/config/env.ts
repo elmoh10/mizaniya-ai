@@ -9,6 +9,11 @@ export interface FirebaseClientConfig {
   appId: string;
 }
 
+export function getAppCheckSiteKey(): string {
+  const metaEnv = (import.meta as any).env || {};
+  return String(metaEnv.VITE_FIREBASE_APP_CHECK_SITE_KEY || '').trim();
+}
+
 /**
  * Validates and retrieves Firebase Client configuration for Vite Frontend Browser Runtime.
  *

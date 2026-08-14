@@ -63,6 +63,16 @@ service cloud.firestore {
         allow write: if false; // Must use authenticated backend API
       }
 
+      match /subscriptions/{subscriptionId} {
+        allow read: if isOwner(userId);
+        allow write: if false; // Must use authenticated backend API
+      }
+
+      match /notifications/{notificationId} {
+        allow read: if isOwner(userId);
+        allow write: if false; // Smart notifications are managed by backend only
+      }
+
       match /installments/{installmentId} {
         allow read: if isOwner(userId);
         allow write: if false; // Must use authenticated backend API

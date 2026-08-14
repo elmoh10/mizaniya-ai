@@ -21,6 +21,8 @@ interface TransactionsViewProps {
   wallets: Wallet[];
   onAddTransaction: (t: Omit<Transaction, 'id'>) => Promise<void> | void;
   lang: 'ar' | 'en';
+  voiceEnabled?: boolean;
+  ocrEnabled?: boolean;
 }
 
 export const TransactionsView: React.FC<TransactionsViewProps> = ({
@@ -28,6 +30,8 @@ export const TransactionsView: React.FC<TransactionsViewProps> = ({
   wallets,
   onAddTransaction,
   lang,
+  voiceEnabled = true,
+  ocrEnabled = true,
 }) => {
   const isAr = lang === 'ar';
 
@@ -239,7 +243,8 @@ export const TransactionsView: React.FC<TransactionsViewProps> = ({
 
         <div className="flex items-center gap-2 flex-wrap">
           <button
-            onClick={() => setShowOCRModal(true)}
+            onClick={() => ocrEnabled && setShowOCRModal(true)}
+            disabled={!ocrEnabled}
             className="flex items-center gap-2 px-3.5 py-2 rounded-xl bg-teal-600 hover:bg-teal-500 text-white font-bold text-xs shadow-md transition"
           >
             <Scan className="w-4 h-4" />
@@ -247,7 +252,8 @@ export const TransactionsView: React.FC<TransactionsViewProps> = ({
           </button>
 
           <button
-            onClick={() => setShowVoiceModal(true)}
+            onClick={() => voiceEnabled && setShowVoiceModal(true)}
+            disabled={!voiceEnabled}
             className="flex items-center gap-2 px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-white font-bold text-xs shadow-md transition"
           >
             <Volume2 className="w-4 h-4 text-emerald-400 animate-pulse" />
@@ -532,7 +538,7 @@ export const TransactionsView: React.FC<TransactionsViewProps> = ({
       )}
 
       {/* --- MODAL 2: REAL OCR RECEIPT SCANNER --- */}
-      {showOCRModal && (
+      {ocrEnabled && showOCRModal && (
         <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-white dark:bg-slate-900 rounded-2xl max-w-lg w-full p-6 shadow-2xl border border-slate-200 dark:border-slate-800 relative space-y-4">
             <button
@@ -632,7 +638,7 @@ export const TransactionsView: React.FC<TransactionsViewProps> = ({
       )}
 
       {/* --- MODAL 3: VOICE EXPENSE LOGGING --- */}
-      {showVoiceModal && (
+      {voiceEnabled && showVoiceModal && (
         <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-white dark:bg-slate-900 rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-200 dark:border-slate-800 relative space-y-4">
             <button
