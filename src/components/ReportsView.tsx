@@ -67,15 +67,22 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
     };
   }, [monthlyTransactions]);
 
-  const categoryTotals = useMemo(() => {
+  const categoryTotals = useMemo<Record<string, number>>(() => {
     const totalsMap: Record<string, number> = {};
     monthlyTransactions.forEach((t) => {
-      if (t.type === 'expense') totalsMap[t.category] = (totalsMap[t.category] || 0) + Number(t.amount || 0);
+      if (t.type === 'expense') {
+        const category = String(t.category || (isAr ? 'غير مصنف' : 'Uncategorized'));
+        totalsMap[category] = (totalsMap[category] || 0) + Number(t.amount || 0);
+      }
     });
     return totalsMap;
-  }, [monthlyTransactions]);
+  }, [monthlyTransactions, isAr]);
 
-  const maxCategory = Math.max(1, ...Object.values(categoryTotals));
+  const categoryEntries = useMemo<Array<[string, number]>>(() =>
+    Object.entries(categoryTotals).map(([category, total]) => [category, Number(total || 0)]),
+    [categoryTotals]
+  );
+  const maxCategory = Math.max(1, ...categoryEntries.map(([, total]) => total));
   const reportName = `mizaniya-report-${monthKey}`;
 
   const markDone = (format: string) => {
@@ -177,8 +184,8 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
 
       <div className="p-6 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm space-y-4">
         <div className="flex justify-between items-center"><h3 className="font-bold text-base text-slate-900 dark:text-white">{isAr ? `توزيع المصروفات — ${monthLabel}` : `Category Expense Distribution — ${monthLabel}`}</h3><span className="text-xs text-slate-500">{monthlyTransactions.length} {isAr?'عملية':'transactions'}</span></div>
-        {Object.keys(categoryTotals).length === 0 ? <div className="py-8 text-center text-xs text-slate-500">{isAr?'لا توجد مصروفات مسجلة في هذا الشهر.':'No expenses recorded for this month.'}</div> : <div className="space-y-3">
-          {Object.entries(categoryTotals).sort((a,b)=>b[1]-a[1]).map(([cat,total]) => <div key={cat} className="space-y-1"><div className="flex justify-between text-xs font-bold"><span className="text-slate-900 dark:text-white">{cat}</span><span className="text-emerald-600">{formatCurrency(total,'EGP',lang)}</span></div><div className="w-full bg-slate-100 dark:bg-slate-800 h-2 rounded-full overflow-hidden"><div className="bg-emerald-500 h-full rounded-full" style={{width:`${Math.max(3,Math.round((total/maxCategory)*100))}%`}}/></div></div>)}
+        {categoryEntries.length === 0 ? <div className="py-8 text-center text-xs text-slate-500">{isAr?'لا توجد مصروفات مسجلة في هذا الشهر.':'No expenses recorded for this month.'}</div> : <div className="space-y-3">
+          {categoryEntries.slice().sort((a, b) => b[1] - a[1]).map(([cat, total]) => <div key={cat} className="space-y-1"><div className="flex justify-between text-xs font-bold"><span className="text-slate-900 dark:text-white">{cat}</span><span className="text-emerald-600">{formatCurrency(total,'EGP',lang)}</span></div><div className="w-full bg-slate-100 dark:bg-slate-800 h-2 rounded-full overflow-hidden"><div className="bg-emerald-500 h-full rounded-full" style={{width:`${Math.max(3,Math.round((total/maxCategory)*100))}%`}}/></div></div>)}
         </div>}
       </div>
     </div>
