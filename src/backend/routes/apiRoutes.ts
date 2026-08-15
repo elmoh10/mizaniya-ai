@@ -5,6 +5,7 @@ import {
   handleAIChat,
   handleAnalyzeReceipt,
   handleParseVoiceCommand,
+  handleTranscribeVoice,
 } from '../controllers/aiController';
 
 import {
@@ -370,6 +371,11 @@ router.post(
 router.post(
   '/ai/parse-voice',
   handleParseVoiceCommand as any
+);
+
+router.post(
+  '/ai/transcribe-voice',
+  handleTranscribeVoice as any
 );
 
 // ============================================================

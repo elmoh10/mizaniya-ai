@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { Transaction, Wallet, CategoryType, PaymentMethod } from '../types';
 import { formatCurrency, formatDate, getCategoryColor } from '../utils/formatters';
 import { apiClient } from '../services/apiClient';
@@ -14,6 +14,8 @@ import {
   Upload,
   AlertTriangle,
   CheckCircle2,
+  Mic,
+  Square,
 } from 'lucide-react';
 
 interface TransactionsViewProps {
@@ -56,6 +58,73 @@ export const TransactionsView: React.FC<TransactionsViewProps> = ({
   const [isVoiceLoading, setIsVoiceLoading] = useState(false);
   const [voiceParsedResult, setVoiceParsedResult] = useState<any>(null);
   const [voiceError, setVoiceError] = useState<string | null>(null);
+  const [isRecording, setIsRecording] = useState(false);
+  const [isTranscribing, setIsTranscribing] = useState(false);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const mediaStreamRef = useRef<MediaStream | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+
+
+  const stopMediaStream = () => {
+    mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
+    mediaStreamRef.current = null;
+  };
+
+  const blobToBase64 = (blob: Blob) => new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => resolve(String(reader.result || '').split(',')[1] || '');
+    reader.onerror = () => reject(new Error('Failed to read recorded audio'));
+    reader.readAsDataURL(blob);
+  });
+
+  const handleStartRecording = async () => {
+    setVoiceError(null);
+    setVoiceParsedResult(null);
+    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
+      setVoiceError(isAr ? 'المتصفح لا يدعم التسجيل الصوتي. يمكنك كتابة الجملة يدويًا.' : 'Voice recording is not supported by this browser.');
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      mediaStreamRef.current = stream;
+      const preferred = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus'];
+      const mimeType = preferred.find((m) => MediaRecorder.isTypeSupported(m));
+      const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+      mediaRecorderRef.current = recorder;
+      audioChunksRef.current = [];
+      recorder.ondataavailable = (event) => { if (event.data.size > 0) audioChunksRef.current.push(event.data); };
+      recorder.onstop = async () => {
+        setIsRecording(false);
+        setIsTranscribing(true);
+        try {
+          const blob = new Blob(audioChunksRef.current, { type: recorder.mimeType || 'audio/webm' });
+          const base64Audio = await blobToBase64(blob);
+          const response = await apiClient.post('/ai/transcribe-voice', { base64Audio, mimeType: blob.type || 'audio/webm' });
+          if (!response.success || !response.data?.text) throw new Error(response.error || (isAr ? 'تعذر تحويل الصوت إلى نص' : 'Could not transcribe audio'));
+          const text = String(response.data.text).trim();
+          setVoiceText(text);
+          const parsed = await apiClient.post('/ai/parse-voice', { spokenText: text });
+          if (parsed.success && parsed.data) setVoiceParsedResult(parsed.data);
+          else setVoiceError(parsed.error || (isAr ? 'تم تحويل الصوت لكن تعذر فهم المعاملة.' : 'Audio transcribed, but transaction parsing failed.'));
+        } catch (err: any) {
+          setVoiceError(err.message || (isAr ? 'فشل تحليل التسجيل الصوتي' : 'Voice processing failed'));
+        } finally {
+          setIsTranscribing(false);
+          stopMediaStream();
+        }
+      };
+      recorder.start();
+      setIsRecording(true);
+    } catch (err: any) {
+      stopMediaStream();
+      setVoiceError(err?.name === 'NotAllowedError' ? (isAr ? 'اسمح للموقع باستخدام الميكروفون ثم حاول مرة أخرى.' : 'Please allow microphone access and try again.') : (err.message || 'Microphone failed'));
+    }
+  };
+
+  const handleStopRecording = () => {
+    const recorder = mediaRecorderRef.current;
+    if (recorder && recorder.state !== 'inactive') recorder.stop();
+  };
 
   // OCR Extraction State
   const [isOCRProcessing, setIsOCRProcessing] = useState(false);
@@ -155,7 +224,7 @@ export const TransactionsView: React.FC<TransactionsViewProps> = ({
   const handleConfirmOCR = async () => {
     if (!ocrResult) return;
     await onAddTransaction({
-      title: `${ocrResult.merchant || 'فاتورة ممسوحة'} - ${ocrResult.items?.[0]?.name || ''}`.trim(),
+      title: `${ocrResult.merchantName || ocrResult.merchant || 'فاتورة ممسوحة'} - ${ocrResult.items?.[0]?.name || ''}`.trim(),
       amount: Number(ocrResult.totalAmount || ocrResult.amount || 0),
       currency: 'EGP',
       type: 'expense',
@@ -163,7 +232,7 @@ export const TransactionsView: React.FC<TransactionsViewProps> = ({
       walletId: wallets[0]?.id || '',
       paymentMethod: ocrResult.paymentMethod || 'InstaPay',
       date: ocrResult.date || new Date().toISOString().split('T')[0],
-      merchant: ocrResult.merchant || '',
+      merchant: ocrResult.merchantName || ocrResult.merchant || '',
       notes: `تم الاستخراج ذكياً من الفاتورة`,
       aiTag: 'مسح ضوئي ذكي OCR',
     });
@@ -204,8 +273,8 @@ export const TransactionsView: React.FC<TransactionsViewProps> = ({
       currency: 'EGP',
       type: voiceParsedResult.type || 'expense',
       category: voiceParsedResult.category || 'Food & Groceries',
-      walletId: wallets[0]?.id || '',
-      paymentMethod: voiceParsedResult.paymentMethod || 'InstaPay',
+      walletId: wallets.find((w) => w.name?.toLowerCase() === String(voiceParsedResult.walletName || '').toLowerCase())?.id || wallets[0]?.id || '',
+      paymentMethod: (voiceParsedResult.walletName || voiceParsedResult.paymentMethod || 'InstaPay') as PaymentMethod,
       date: new Date().toISOString().split('T')[0],
       merchant: voiceParsedResult.merchant || undefined,
       aiTag: 'تسجيل صوتی بالعامية',
@@ -601,7 +670,7 @@ export const TransactionsView: React.FC<TransactionsViewProps> = ({
                 <div className="p-4 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 space-y-2">
                   <div className="flex items-center justify-between">
                     <span className="font-bold text-sm text-emerald-900 dark:text-emerald-100">
-                      {ocrResult.merchant || 'فاتورة غير معروفة'}
+                      {ocrResult.merchantName || ocrResult.merchant || 'فاتورة غير معروفة'}
                     </span>
                     <span className="font-black text-sm text-emerald-700 dark:text-emerald-300">
                       {formatCurrency(Number(ocrResult.totalAmount || ocrResult.amount || 0), 'EGP', lang)}
@@ -670,6 +739,21 @@ export const TransactionsView: React.FC<TransactionsViewProps> = ({
                   ? 'اكتب أو تحدث بالجملة وسيتم استخراج المبلغ والتاجر والفئة عبر الذكاء الاصطناعي:'
                   : 'Speak or type in Egyptian Arabic:'}
               </p>
+
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={isRecording ? handleStopRecording : handleStartRecording}
+                  disabled={isTranscribing}
+                  className={`py-3 rounded-xl font-bold flex items-center justify-center gap-2 transition ${isRecording ? 'bg-red-600 hover:bg-red-500 text-white' : 'bg-emerald-600 hover:bg-emerald-500 text-white'} disabled:opacity-50`}
+                >
+                  {isRecording ? <Square className="w-4 h-4 fill-current" /> : <Mic className="w-4 h-4" />}
+                  <span>{isRecording ? (isAr ? 'إيقاف التسجيل' : 'Stop') : (isAr ? 'ابدأ التسجيل' : 'Record')}</span>
+                </button>
+                <div className="rounded-xl border border-slate-200 dark:border-slate-700 px-3 flex items-center justify-center text-[11px] text-slate-500">
+                  {isTranscribing ? (isAr ? 'Gemini يحول الصوت ويفهم المعاملة...' : 'Gemini is transcribing...') : isRecording ? (isAr ? 'جاري الاستماع...' : 'Listening...') : (isAr ? 'أو اكتب الجملة بالأسفل' : 'Or type below')}
+                </div>
+              </div>
 
               <textarea
                 rows={3}

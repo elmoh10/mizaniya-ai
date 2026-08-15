@@ -2,7 +2,7 @@ import { Response } from 'express';
 import { routeAgentQuery } from '../../ai/supervisor';
 import { redactApiKey } from '../../ai/agents/coachAgent';
 import { parseReceiptImageWithGemini } from '../services/ocrService';
-import { parseVoiceCommandExpense } from '../services/voiceService';
+import { parseVoiceCommandExpense, transcribeAudioWithGemini } from '../services/voiceService';
 import { aiChatSchema, ocrAnalyzeSchema, voiceCommandSchema } from '../validators/schemas';
 import { AuthenticatedRequest } from '../middlewares/authMiddleware';
 
@@ -80,5 +80,21 @@ export async function handleParseVoiceCommand(req: AuthenticatedRequest, res: Re
   } catch (err: any) {
     console.error('AI Controller Voice Error:', err);
     res.status(500).json({ error: 'Failed to process voice command', details: err.message });
+  }
+}
+
+
+export async function handleTranscribeVoice(req: AuthenticatedRequest, res: Response) {
+  try {
+    const base64Audio = String(req.body?.base64Audio || '').trim();
+    const mimeType = String(req.body?.mimeType || 'audio/webm').trim();
+    if (!base64Audio) return res.status(400).json({ error: 'Audio payload is required' });
+    if (base64Audio.length > 12 * 1024 * 1024) return res.status(413).json({ error: 'Audio payload is too large' });
+    const result = await transcribeAudioWithGemini(base64Audio, mimeType);
+    if (!result.success) return res.status(422).json({ success: false, error: result.errorDetails || result.errorCode || 'Transcription failed' });
+    return res.json({ success: true, data: result });
+  } catch (err: any) {
+    console.error('AI Controller Transcription Error:', err);
+    return res.status(500).json({ error: 'Failed to transcribe audio', details: err.message });
   }
 }

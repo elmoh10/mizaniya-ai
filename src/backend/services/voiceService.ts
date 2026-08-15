@@ -123,13 +123,23 @@ export async function transcribeAudioWithGemini(
     };
   }
 
-  const cleanBase64 = String(base64Audio || '').trim();
+  const cleanBase64 = String(base64Audio || '').replace(/^data:audio\/[^;]+;base64,/, '').trim();
   if (!cleanBase64) {
     return {
       success: false,
       errorCode: 'EMPTY_AUDIO',
       errorDetails: 'Audio payload is empty.',
     };
+  }
+
+  const allowedAudio = ['audio/webm', 'audio/ogg', 'audio/mp4', 'audio/mpeg', 'audio/wav', 'audio/x-wav'];
+  const normalizedMime = String(mimeType || 'audio/webm').split(';')[0].toLowerCase();
+  if (!allowedAudio.includes(normalizedMime)) {
+    return { success: false, errorCode: 'UNSUPPORTED_AUDIO', errorDetails: `Unsupported audio type: ${normalizedMime}` };
+  }
+  const estimatedBytes = Math.ceil((cleanBase64.length * 3) / 4);
+  if (estimatedBytes > 8 * 1024 * 1024) {
+    return { success: false, errorCode: 'AUDIO_TOO_LARGE', errorDetails: 'Audio must be 8MB or less.' };
   }
 
   try {
@@ -147,7 +157,7 @@ export async function transcribeAudioWithGemini(
           {
             inlineData: {
               data: cleanBase64,
-              mimeType: mimeType || 'audio/ogg',
+              mimeType: normalizedMime,
             },
           },
           {
