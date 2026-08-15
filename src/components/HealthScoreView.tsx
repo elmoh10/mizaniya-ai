@@ -1,6 +1,5 @@
 import React from 'react';
-import { HealthScoreBreakdown } from '../types';
-import { initialChallenges } from '../data/initialData';
+import { HealthScoreBreakdown, Challenge } from '../types';
 import {
   HeartPulse,
   Award,
@@ -13,11 +12,13 @@ import {
 interface HealthScoreViewProps {
   healthScore: HealthScoreBreakdown | null;
   lang: 'ar' | 'en';
+  challenges?: Challenge[];
 }
 
 export const HealthScoreView: React.FC<HealthScoreViewProps> = ({
   healthScore,
   lang,
+  challenges = [],
 }) => {
   const isAr = lang === 'ar';
 
@@ -139,6 +140,23 @@ export const HealthScoreView: React.FC<HealthScoreViewProps> = ({
         ))}
       </div>
 
+
+      {healthScore.recommendations?.length > 0 && (
+        <div className="p-5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm space-y-3">
+          <h3 className="font-bold text-base text-slate-900 dark:text-white">
+            {isAr ? 'خطوات لتحسين المؤشر' : 'How to improve your score'}
+          </h3>
+          <div className="space-y-2">
+            {healthScore.recommendations.map((r, idx) => (
+              <div key={idx} className="flex gap-2 text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+                <span className="font-black text-emerald-500">{idx + 1}.</span>
+                <span>{r}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Active Gamified Challenges */}
       <div className="space-y-4 pt-4 border-t border-slate-200 dark:border-slate-800">
         <h3 className="text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
@@ -146,8 +164,13 @@ export const HealthScoreView: React.FC<HealthScoreViewProps> = ({
           <span>{isAr ? 'التحديات المالية النشطة' : 'Active Financial Challenges'}</span>
         </h3>
 
+        {challenges.length === 0 ? (
+          <div className="p-6 rounded-2xl bg-white dark:bg-slate-900 border border-dashed border-slate-300 dark:border-slate-700 text-center text-xs text-slate-500">
+            {isAr ? 'سيتم إنشاء تحديات تلقائية بعد توفر بيانات صرف وميزانية كافية.' : 'Challenges will appear automatically when enough spending and budget data is available.'}
+          </div>
+        ) : (
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          {initialChallenges.map((c) => (
+          {challenges.map((c) => (
             <div
               key={c.id}
               className="p-5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm space-y-3"
@@ -185,6 +208,7 @@ export const HealthScoreView: React.FC<HealthScoreViewProps> = ({
             </div>
           ))}
         </div>
+        )}
       </div>
     </div>
   );

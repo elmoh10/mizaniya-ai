@@ -20,7 +20,7 @@ import { AuthView } from './components/AuthView';
 
 import { auth, onAuthStateChanged, firebaseSignOut, User } from './config/firebaseClient';
 import { apiClient } from './services/apiClient';
-import { Wallet, Transaction, Budget, Goal, Bill, Subscription, HealthScoreBreakdown, InsightTimelineItem, FeatureFlags } from './types';
+import { Wallet, Transaction, Budget, Goal, Bill, Subscription, HealthScoreBreakdown, InsightTimelineItem, FeatureFlags, Challenge } from './types';
 import { AlertCircle, RefreshCw } from 'lucide-react';
 
 export function App() {
@@ -64,6 +64,8 @@ export function App() {
   const [subscriptions, setSubscriptions] = useState<Subscription[]>([]);
   const [healthScore, setHealthScore] = useState<HealthScoreBreakdown | null>(null);
   const [timeline, setTimeline] = useState<InsightTimelineItem[]>([]);
+  const [challenges, setChallenges] = useState<Challenge[]>([]);
+  const [smartInsights, setSmartInsights] = useState<any>(null);
 
   // Data Loading States
   const [dataLoading, setDataLoading] = useState<boolean>(false);
@@ -116,7 +118,7 @@ export function App() {
     setDataError(null);
 
     try {
-      const [walletsRes, txsRes, budgetRes, goalsRes, billsRes, subscriptionsRes, healthRes, insightsRes, notificationsRes, configRes] = await Promise.all([
+      const [walletsRes, txsRes, budgetRes, goalsRes, billsRes, subscriptionsRes, healthRes, insightsRes, notificationsRes, configRes, challengesRes] = await Promise.all([
         apiClient.get('/wallets'),
         apiClient.get('/transactions'),
         apiClient.get('/budgets/current'),
@@ -127,6 +129,7 @@ export function App() {
         apiClient.get('/smart-insights'),
         apiClient.get('/notifications'),
         apiClient.get('/system-config'),
+        apiClient.get('/challenges'),
       ]);
 
       if (walletsRes.success) setWallets(walletsRes.wallets || []);
@@ -135,9 +138,10 @@ export function App() {
       if (goalsRes.success) setGoals(goalsRes.goals || []);
       if (billsRes.success) setBills(billsRes.bills || []);
       if (subscriptionsRes.success) setSubscriptions(subscriptionsRes.subscriptions || []);
-      if (insightsRes?.success && insightsRes.data?.timeline) setTimeline(insightsRes.data.timeline);
+      if (insightsRes?.success && insightsRes.data) { setSmartInsights(insightsRes.data); setTimeline(insightsRes.data.timeline || []); }
       if (notificationsRes?.success) { setNotifications(notificationsRes.notifications || []); setUnreadNotifications(notificationsRes.unreadCount || 0); }
       if (configRes?.success && configRes.flags) setFeatureFlags(configRes.flags);
+      if (challengesRes?.success) setChallenges(challengesRes.challenges || []);
       if (healthRes.success && healthRes.status === 'CALCULATED' && healthRes.score) {
         setHealthScore(healthRes.score);
       } else {
@@ -226,6 +230,8 @@ export function App() {
       setGoals([]);
       setBills([]);
       setHealthScore(null);
+      setChallenges([]);
+      setSmartInsights(null);
       setDataError(null);
       setActiveTab('dashboard');
     } catch (err) {
@@ -391,13 +397,13 @@ export function App() {
               {activeTab === 'goals' && <GoalsView goals={goals} lang={lang} />}
 
               {activeTab === 'health' && (
-                <HealthScoreView healthScore={healthScore} lang={lang} />
+                <HealthScoreView healthScore={healthScore} challenges={challenges} lang={lang} />
               )}
 
               {activeTab === 'family' && <FamilyView lang={lang} enabled={featureFlags.familyWallet} />}
 
               {activeTab === 'reports' && (
-                <ReportsView transactions={transactions} budget={budget} lang={lang} />
+                <ReportsView transactions={transactions} budget={budget} smartInsights={smartInsights} lang={lang} />
               )}
 
               {activeTab === 'widgets' && (

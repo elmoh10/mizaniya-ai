@@ -40,6 +40,7 @@ import { profileRepository } from '../repositories/profileRepository';
 import { getTrustedFinancialContext } from '../services/financialContextService';
 import { buildSmartFinancialInsights } from '../services/smartFinancialInsightsService';
 import { buildSmartAlerts, buildWeeklyFinancialReport, detectRecurringSubscriptions } from '../services/financialAutomationService';
+import { buildFinancialChallenges } from '../services/financialChallengeService';
 
 import {
   executeBillPayment,
@@ -924,6 +925,15 @@ router.get('/weekly-report', async (req: AuthenticatedRequest, res) => {
 router.get('/subscriptions/detected', async (req: AuthenticatedRequest, res) => {
   try { return res.json({ success:true, subscriptions: await detectRecurringSubscriptions(req.user!.uid) }); }
   catch (err:any) { return res.status(500).json({ error:'Failed to detect subscriptions', details:err.message }); }
+});
+
+
+router.get('/challenges', async (req: AuthenticatedRequest, res) => {
+  try {
+    return res.json({ success: true, challenges: await buildFinancialChallenges(req.user!.uid) });
+  } catch (err: any) {
+    return res.status(500).json({ error: 'Failed to build financial challenges', details: err.message });
+  }
 });
 
 router.get('/smart-insights', async (req: AuthenticatedRequest, res) => {
