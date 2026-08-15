@@ -11,6 +11,10 @@ import {
   Users,
   ShieldCheck,
   Clock3,
+  UserCog,
+  Ban,
+  CheckCircle2,
+  ScrollText,
 } from 'lucide-react';
 
 interface AdminViewProps {
@@ -38,6 +42,8 @@ export const AdminView: React.FC<AdminViewProps> = ({ onClose, lang, onFlagsChan
   const [loading, setLoading] = useState<boolean>(true);
   const [saving, setSaving] = useState<boolean>(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [auditLogs, setAuditLogs] = useState<any[]>([]);
+  const [userActionUid, setUserActionUid] = useState<string | null>(null);
 
   useEffect(() => {
     setLoading(true);
@@ -45,8 +51,9 @@ export const AdminView: React.FC<AdminViewProps> = ({ onClose, lang, onFlagsChan
       apiClient.get('/system-config'),
       apiClient.get('/admin/metrics'),
       apiClient.get('/admin/users'),
+      apiClient.get('/admin/audit-logs'),
     ])
-      .then(([configRes, metricsRes, usersRes]) => {
+      .then(([configRes, metricsRes, usersRes, auditRes]) => {
         if (configRes.success && configRes.flags) {
           setFlags(configRes.flags);
         }
@@ -60,6 +67,7 @@ export const AdminView: React.FC<AdminViewProps> = ({ onClose, lang, onFlagsChan
         } else {
           setUsers([]);
         }
+        if (auditRes.success) setAuditLogs(auditRes.logs || []);
       })
       .catch((err) => {
         console.error('Admin view fetch error:', err);
@@ -85,6 +93,38 @@ export const AdminView: React.FC<AdminViewProps> = ({ onClose, lang, onFlagsChan
     } finally {
       setSaving(false);
     }
+  };
+
+  const updateUserStatus = async (u: any) => {
+    const nextDisabled = !u.disabled;
+    const message = nextDisabled
+      ? (isAr ? `تعطيل حساب ${u.email || u.uid}؟ لن يستطيع تسجيل الدخول حتى تعيد تفعيله.` : `Disable ${u.email || u.uid}?`)
+      : (isAr ? `إعادة تفعيل حساب ${u.email || u.uid}؟` : `Enable ${u.email || u.uid}?`);
+    if (!window.confirm(message)) return;
+    setUserActionUid(u.uid); setErrorMessage(null);
+    try {
+      const res = await apiClient.patch(`/admin/users/${u.uid}/status`, { disabled: nextDisabled });
+      if (!res.success) throw new Error(res.error || 'Failed');
+      setUsers((prev) => prev.map((x) => x.uid === u.uid ? { ...x, disabled: nextDisabled } : x));
+      const logs = await apiClient.get('/admin/audit-logs'); if (logs.success) setAuditLogs(logs.logs || []);
+    } catch (err: any) { setErrorMessage(err.message || (isAr ? 'تعذر تحديث حالة المستخدم' : 'Failed to update user')); }
+    finally { setUserActionUid(null); }
+  };
+
+  const updateUserRole = async (u: any) => {
+    const nextRole = u.role === 'admin' ? 'user' : 'admin';
+    const message = isAr
+      ? `${nextRole === 'admin' ? 'منح' : 'إزالة'} صلاحية Admin للحساب ${u.email || u.uid}؟`
+      : `Change ${u.email || u.uid} role to ${nextRole}?`;
+    if (!window.confirm(message)) return;
+    setUserActionUid(u.uid); setErrorMessage(null);
+    try {
+      const res = await apiClient.patch(`/admin/users/${u.uid}/role`, { role: nextRole });
+      if (!res.success) throw new Error(res.error || 'Failed');
+      setUsers((prev) => prev.map((x) => x.uid === u.uid ? { ...x, role: nextRole } : x));
+      const logs = await apiClient.get('/admin/audit-logs'); if (logs.success) setAuditLogs(logs.logs || []);
+    } catch (err: any) { setErrorMessage(err.message || (isAr ? 'تعذر تحديث صلاحية المستخدم' : 'Failed to update role')); }
+    finally { setUserActionUid(null); }
   };
 
   return (
@@ -198,13 +238,34 @@ export const AdminView: React.FC<AdminViewProps> = ({ onClose, lang, onFlagsChan
                     </div>
                     <div className="text-[10px] text-slate-400 truncate">{u.email || u.uid}</div>
                   </div>
-                  <div className="text-[10px] text-slate-400 text-left shrink-0">
-                    <div className="flex items-center gap-1"><Clock3 className="w-3 h-3" />{u.lastSignInAt ? new Date(u.lastSignInAt).toLocaleDateString(isAr ? 'ar-EG' : 'en-US') : '-'}</div>
-                    <div>{u.role === 'admin' ? 'Admin' : 'User'}</div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <div className="text-[10px] text-slate-400 text-left hidden sm:block">
+                      <div className="flex items-center gap-1"><Clock3 className="w-3 h-3" />{u.lastSignInAt ? new Date(u.lastSignInAt).toLocaleDateString(isAr ? 'ar-EG' : 'en-US') : '-'}</div>
+                      <div>{u.role === 'admin' ? 'Admin' : 'User'}</div>
+                    </div>
+                    <button disabled={userActionUid === u.uid} onClick={() => updateUserRole(u)} title={isAr ? 'تغيير الصلاحية' : 'Change role'} className="p-2 rounded-lg bg-cyan-500/10 text-cyan-600 hover:bg-cyan-500/20 disabled:opacity-40"><UserCog className="w-3.5 h-3.5" /></button>
+                    <button disabled={userActionUid === u.uid} onClick={() => updateUserStatus(u)} title={u.disabled ? (isAr ? 'تفعيل الحساب' : 'Enable') : (isAr ? 'تعطيل الحساب' : 'Disable')} className={`p-2 rounded-lg disabled:opacity-40 ${u.disabled ? 'bg-emerald-500/10 text-emerald-600' : 'bg-rose-500/10 text-rose-600'}`}>{u.disabled ? <CheckCircle2 className="w-3.5 h-3.5" /> : <Ban className="w-3.5 h-3.5" />}</button>
                   </div>
                 </div>
               ))}
             </div>
+          </div>
+        </div>
+
+        {/* Admin Audit Log */}
+        <div className="space-y-3">
+          <h3 className="font-bold text-sm text-slate-900 dark:text-white flex items-center gap-2">
+            <ScrollText className="w-4 h-4 text-violet-500" />
+            <span>{isAr ? 'سجل إجراءات الإدارة' : 'Admin Audit Log'}</span>
+          </h3>
+          <div className="rounded-2xl border border-slate-200 dark:border-slate-700 max-h-44 overflow-y-auto divide-y divide-slate-200 dark:divide-slate-800">
+            {auditLogs.length === 0 ? <div className="p-4 text-center text-xs text-slate-400">{isAr ? 'لا توجد إجراءات إدارية مسجلة بعد.' : 'No admin actions yet.'}</div> : auditLogs.slice(0, 30).map((log) => (
+              <div key={log.id} className="p-3 text-[10px] bg-white dark:bg-slate-900">
+                <div className="font-bold text-slate-800 dark:text-slate-100">{log.action}</div>
+                <div className="text-slate-400 mt-0.5">{log.details?.email || log.targetUid} · {log.actorEmail || log.actorUid}</div>
+                <div className="text-slate-400">{log.createdAt ? new Date(log.createdAt).toLocaleString(isAr ? 'ar-EG' : 'en-US') : '-'}</div>
+              </div>
+            ))}
           </div>
         </div>
 

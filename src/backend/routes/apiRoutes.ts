@@ -2307,6 +2307,104 @@ router.get(
 );
 
 // ============================================================
+// Admin User Management + Audit Log
+// ============================================================
+
+async function writeAdminAuditLog(
+  req: AuthenticatedRequest,
+  action: string,
+  targetUid: string,
+  details: Record<string, any> = {}
+) {
+  try {
+    await db.collection('adminAuditLogs').add({
+      action,
+      targetUid,
+      actorUid: req.user!.uid,
+      actorEmail: req.user!.email || null,
+      details,
+      createdAt: new Date().toISOString(),
+    });
+  } catch (err: any) {
+    // Audit logging must never hide the result of the admin action,
+    // but the failure is still visible in Cloud Run logs.
+    console.error('Admin audit log write failed:', err.message);
+  }
+}
+
+router.patch(
+  '/admin/users/:uid/status',
+  requireAdmin as any,
+  async (req: AuthenticatedRequest, res) => {
+    try {
+      const targetUid = String(req.params.uid || '');
+      const disabled = req.body?.disabled;
+      if (typeof disabled !== 'boolean') {
+        return res.status(400).json({ error: 'disabled must be boolean' });
+      }
+      if (targetUid === req.user!.uid && disabled) {
+        return res.status(400).json({ error: 'You cannot disable your own admin account.' });
+      }
+      const before = await auth.getUser(targetUid);
+      const updated = await auth.updateUser(targetUid, { disabled });
+      await writeAdminAuditLog(req, disabled ? 'USER_DISABLED' : 'USER_ENABLED', targetUid, {
+        email: before.email || null,
+        previousDisabled: before.disabled,
+        disabled: updated.disabled,
+      });
+      return res.json({ success: true, user: { uid: updated.uid, disabled: updated.disabled } });
+    } catch (err: any) {
+      return res.status(500).json({ error: 'Failed to update user status', details: err.message });
+    }
+  }
+);
+
+router.patch(
+  '/admin/users/:uid/role',
+  requireAdmin as any,
+  async (req: AuthenticatedRequest, res) => {
+    try {
+      const targetUid = String(req.params.uid || '');
+      const role = String(req.body?.role || '');
+      if (!['admin', 'user'].includes(role)) {
+        return res.status(400).json({ error: 'role must be admin or user' });
+      }
+      if (targetUid === req.user!.uid && role !== 'admin') {
+        return res.status(400).json({ error: 'You cannot remove your own admin role.' });
+      }
+      const user = await auth.getUser(targetUid);
+      const currentClaims = user.customClaims || {};
+      const nextClaims: Record<string, any> = { ...currentClaims, role };
+      if (role === 'admin') nextClaims.admin = true;
+      else delete nextClaims.admin;
+      await auth.setCustomUserClaims(targetUid, nextClaims);
+      await writeAdminAuditLog(req, role === 'admin' ? 'USER_PROMOTED' : 'USER_DEMOTED', targetUid, {
+        email: user.email || null,
+        previousRole: user.customClaims?.admin === true || user.customClaims?.role === 'admin' ? 'admin' : 'user',
+        role,
+      });
+      return res.json({ success: true, user: { uid: targetUid, role } });
+    } catch (err: any) {
+      return res.status(500).json({ error: 'Failed to update user role', details: err.message });
+    }
+  }
+);
+
+router.get(
+  '/admin/audit-logs',
+  requireAdmin as any,
+  async (_req, res) => {
+    try {
+      const snap = await db.collection('adminAuditLogs').orderBy('createdAt', 'desc').limit(100).get();
+      const logs = snap.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
+      return res.json({ success: true, logs });
+    } catch (err: any) {
+      return res.status(500).json({ error: 'Failed to load admin audit logs', details: err.message });
+    }
+  }
+);
+
+// ============================================================
 // Financial Context
 // ============================================================
 
