@@ -129,6 +129,7 @@ export const TransactionsView: React.FC<TransactionsViewProps> = ({
   // OCR Extraction State
   const [isOCRProcessing, setIsOCRProcessing] = useState(false);
   const [ocrResult, setOcrResult] = useState<any>(null);
+  const [ocrDraft, setOcrDraft] = useState<any>(null);
   const [ocrError, setOcrError] = useState<string | null>(null);
 
   // Filter Search
@@ -208,6 +209,16 @@ export const TransactionsView: React.FC<TransactionsViewProps> = ({
 
         if (res.success && res.data) {
           setOcrResult(res.data);
+          setOcrDraft({
+            ...res.data,
+            merchantName: res.data.merchantName || res.data.merchant || '',
+            totalAmount: Number(res.data.totalAmount || res.data.amount || 0),
+            category: res.data.category || 'Food & Groceries',
+            paymentMethod: res.data.paymentMethod || 'InstaPay',
+            walletId: wallets[0]?.id || '',
+            date: res.data.date || new Date().toISOString().split('T')[0],
+            items: Array.isArray(res.data.items) ? res.data.items : [],
+          });
         } else {
           setOcrError(res.error || (isAr ? 'لم نتمكن من قراءة الفاتورة.' : 'Failed to analyze receipt.'));
         }
@@ -222,21 +233,34 @@ export const TransactionsView: React.FC<TransactionsViewProps> = ({
 
   // Confirm OCR and create transaction
   const handleConfirmOCR = async () => {
-    if (!ocrResult) return;
+    if (!ocrResult || !ocrDraft) return;
+    const amountValue = Number(ocrDraft.totalAmount || 0);
+    if (!amountValue || amountValue <= 0 || !ocrDraft.walletId) {
+      setOcrError(isAr ? 'راجع المبلغ والمحفظة قبل الحفظ.' : 'Review amount and wallet before saving.');
+      return;
+    }
+    const itemSummary = (ocrDraft.items || []).slice(0, 8).map((item: any) => `${item.name || 'صنف'}${item.quantity ? ` ×${item.quantity}` : ''}: ${Number(item.price || 0)} ج.م`).join(' | ');
     await onAddTransaction({
-      title: `${ocrResult.merchantName || ocrResult.merchant || 'فاتورة ممسوحة'} - ${ocrResult.items?.[0]?.name || ''}`.trim(),
-      amount: Number(ocrResult.totalAmount || ocrResult.amount || 0),
+      title: `${ocrDraft.merchantName || 'فاتورة ممسوحة'}${ocrDraft.items?.[0]?.name ? ` - ${ocrDraft.items[0].name}` : ''}`.trim(),
+      amount: amountValue,
       currency: 'EGP',
       type: 'expense',
-      category: ocrResult.category || 'Food & Groceries',
-      walletId: wallets[0]?.id || '',
-      paymentMethod: ocrResult.paymentMethod || 'InstaPay',
-      date: ocrResult.date || new Date().toISOString().split('T')[0],
-      merchant: ocrResult.merchantName || ocrResult.merchant || '',
-      notes: `تم الاستخراج ذكياً من الفاتورة`,
+      category: ocrDraft.category || 'Food & Groceries',
+      walletId: ocrDraft.walletId,
+      paymentMethod: ocrDraft.paymentMethod || 'InstaPay',
+      date: ocrDraft.date || new Date().toISOString().split('T')[0],
+      merchant: ocrDraft.merchantName || '',
+      notes: [
+        'تم الاستخراج ذكياً من الفاتورة',
+        ocrDraft.receiptNumber ? `رقم الإيصال: ${ocrDraft.receiptNumber}` : '',
+        Number(ocrDraft.taxAmount || 0) ? `ضريبة: ${ocrDraft.taxAmount} ج.م` : '',
+        Number(ocrDraft.discountAmount || 0) ? `خصم: ${ocrDraft.discountAmount} ج.م` : '',
+        itemSummary ? `الأصناف: ${itemSummary}` : '',
+      ].filter(Boolean).join(' — '),
       aiTag: 'مسح ضوئي ذكي OCR',
     });
     setOcrResult(null);
+    setOcrDraft(null);
     setShowOCRModal(false);
   };
 
@@ -614,6 +638,7 @@ export const TransactionsView: React.FC<TransactionsViewProps> = ({
               onClick={() => {
                 setShowOCRModal(false);
                 setOcrResult(null);
+                setOcrDraft(null);
                 setOcrError(null);
               }}
               className="absolute top-4 left-4 p-1 rounded-lg text-slate-400 hover:text-slate-600"
@@ -666,38 +691,79 @@ export const TransactionsView: React.FC<TransactionsViewProps> = ({
                 )}
               </div>
             ) : (
-              <div className="space-y-4 text-xs">
-                <div className="p-4 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 space-y-2">
-                  <div className="flex items-center justify-between">
-                    <span className="font-bold text-sm text-emerald-900 dark:text-emerald-100">
-                      {ocrResult.merchantName || ocrResult.merchant || 'فاتورة غير معروفة'}
-                    </span>
-                    <span className="font-black text-sm text-emerald-700 dark:text-emerald-300">
-                      {formatCurrency(Number(ocrResult.totalAmount || ocrResult.amount || 0), 'EGP', lang)}
-                    </span>
+              <div className="space-y-4 text-xs max-h-[70vh] overflow-y-auto pr-1">
+                <div className="p-3 rounded-xl bg-teal-50 dark:bg-teal-950/30 border border-teal-200 dark:border-teal-800 flex items-center justify-between gap-3">
+                  <div>
+                    <p className="font-bold text-teal-900 dark:text-teal-100">{isAr ? 'راجع البيانات قبل الحفظ' : 'Review before saving'}</p>
+                    <p className="text-[10px] text-teal-700 dark:text-teal-300">{isAr ? 'كل الحقول قابلة للتعديل، والذكاء الاصطناعي لا يحفظ أي شيء قبل تأكيدك.' : 'All fields are editable; nothing is saved before confirmation.'}</p>
                   </div>
-
-                  <p className="text-slate-600 dark:text-slate-300">
-                    {isAr ? 'الفئة:' : 'Category:'}{' '}
-                    <span className="font-bold">{ocrResult.category || 'Food & Groceries'}</span> |{' '}
-                    {isAr ? 'طريقة الدفع:' : 'Payment:'}{' '}
-                    <span className="font-bold">{ocrResult.paymentMethod || 'InstaPay'}</span>
-                  </p>
+                  <span className="font-bold text-[10px] whitespace-nowrap">{Math.round(Number(ocrResult.confidenceScore || 0) * 100)}% AI</span>
                 </div>
 
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <label className="space-y-1">
+                    <span className="font-bold text-slate-600 dark:text-slate-300">{isAr ? 'التاجر' : 'Merchant'}</span>
+                    <input value={ocrDraft?.merchantName || ''} onChange={(e) => setOcrDraft((d:any) => ({...d, merchantName:e.target.value}))} className="w-full p-2.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700" />
+                  </label>
+                  <label className="space-y-1">
+                    <span className="font-bold text-slate-600 dark:text-slate-300">{isAr ? 'الإجمالي' : 'Total'}</span>
+                    <input type="number" min="0" step="0.01" value={ocrDraft?.totalAmount ?? ''} onChange={(e) => setOcrDraft((d:any) => ({...d, totalAmount:e.target.value}))} className="w-full p-2.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700" />
+                  </label>
+                  <label className="space-y-1">
+                    <span className="font-bold text-slate-600 dark:text-slate-300">{isAr ? 'التاريخ' : 'Date'}</span>
+                    <input type="date" value={ocrDraft?.date || ''} onChange={(e) => setOcrDraft((d:any) => ({...d, date:e.target.value}))} className="w-full p-2.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700" />
+                  </label>
+                  <label className="space-y-1">
+                    <span className="font-bold text-slate-600 dark:text-slate-300">{isAr ? 'المحفظة' : 'Wallet'}</span>
+                    <select value={ocrDraft?.walletId || ''} onChange={(e) => setOcrDraft((d:any) => ({...d, walletId:e.target.value}))} className="w-full p-2.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700">
+                      {wallets.map((w) => <option key={w.id} value={w.id}>{w.nameAr || w.name}</option>)}
+                    </select>
+                  </label>
+                  <label className="space-y-1">
+                    <span className="font-bold text-slate-600 dark:text-slate-300">{isAr ? 'الفئة' : 'Category'}</span>
+                    <select value={ocrDraft?.category || 'Food & Groceries'} onChange={(e) => setOcrDraft((d:any) => ({...d, category:e.target.value}))} className="w-full p-2.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700">
+                      {['Food & Groceries','Housing & Utilities','Bills & Subscriptions','Transport & Ride Apps','Installments & Debt','Health & Education','Family & Allowances','Shopping & Entertainment','Emergency & Savings'].map((c) => <option key={c} value={c}>{c}</option>)}
+                    </select>
+                  </label>
+                  <label className="space-y-1">
+                    <span className="font-bold text-slate-600 dark:text-slate-300">{isAr ? 'طريقة الدفع' : 'Payment'}</span>
+                    <select value={ocrDraft?.paymentMethod || 'InstaPay'} onChange={(e) => setOcrDraft((d:any) => ({...d, paymentMethod:e.target.value}))} className="w-full p-2.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700">
+                      {['InstaPay','Vodafone Cash','CIB Bank','Fawry','Cash','Visa/Mastercard','Valu','B.TECH / Aman'].map((m) => <option key={m} value={m}>{m}</option>)}
+                    </select>
+                  </label>
+                </div>
+
+                {(ocrDraft?.subtotal || ocrDraft?.taxAmount || ocrDraft?.discountAmount || ocrDraft?.receiptNumber) && (
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 p-3 rounded-xl bg-slate-50 dark:bg-slate-800/70 border border-slate-200 dark:border-slate-700">
+                    <div><p className="text-[10px] text-slate-400">Subtotal</p><p className="font-bold">{Number(ocrDraft?.subtotal || 0).toFixed(2)}</p></div>
+                    <div><p className="text-[10px] text-slate-400">Tax</p><p className="font-bold">{Number(ocrDraft?.taxAmount || 0).toFixed(2)}</p></div>
+                    <div><p className="text-[10px] text-slate-400">Discount</p><p className="font-bold">{Number(ocrDraft?.discountAmount || 0).toFixed(2)}</p></div>
+                    <div><p className="text-[10px] text-slate-400">Receipt #</p><p className="font-bold truncate">{ocrDraft?.receiptNumber || '-'}</p></div>
+                  </div>
+                )}
+
+                {!!ocrDraft?.items?.length && (
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between"><p className="font-bold text-slate-700 dark:text-slate-200">{isAr ? 'بنود الفاتورة' : 'Receipt items'}</p><span className="text-[10px] text-slate-400">{ocrDraft.items.length}</span></div>
+                    <div className="space-y-2 max-h-48 overflow-y-auto">
+                      {ocrDraft.items.map((item:any, index:number) => (
+                        <div key={index} className="grid grid-cols-[1fr_70px] gap-2 p-2 rounded-xl border border-slate-200 dark:border-slate-700">
+                          <input value={item.name || ''} onChange={(e) => setOcrDraft((d:any) => ({...d, items:d.items.map((x:any,i:number)=>i===index?{...x,name:e.target.value}:x)}))} className="bg-transparent outline-none" />
+                          <input type="number" min="0" step="0.01" value={item.price ?? 0} onChange={(e) => setOcrDraft((d:any) => ({...d, items:d.items.map((x:any,i:number)=>i===index?{...x,price:Number(e.target.value)}:x)}))} className="bg-transparent outline-none text-left font-bold" />
+                          <p className="col-span-2 text-[10px] text-slate-400">{item.quantity ? `${isAr ? 'الكمية' : 'Qty'}: ${item.quantity}` : ''}{item.unitPrice ? ` • ${isAr ? 'سعر الوحدة' : 'Unit'}: ${item.unitPrice}` : ''}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
                 <div className="flex gap-2">
-                  <button
-                    onClick={handleConfirmOCR}
-                    className="flex-1 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold shadow transition flex items-center justify-center gap-2"
-                  >
+                  <button onClick={handleConfirmOCR} className="flex-1 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold shadow transition flex items-center justify-center gap-2">
                     <CheckCircle2 className="w-4 h-4" />
                     <span>{isAr ? 'تأكيد وحفظ المعاملة' : 'Confirm & Save'}</span>
                   </button>
-                  <button
-                    onClick={() => setOcrResult(null)}
-                    className="px-4 py-2.5 rounded-xl bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-bold"
-                  >
-                    {isAr ? 'إلغاء' : 'Reset'}
+                  <button onClick={() => { setOcrResult(null); setOcrDraft(null); }} className="px-4 py-2.5 rounded-xl bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-bold">
+                    {isAr ? 'إعادة المسح' : 'Reset'}
                   </button>
                 </div>
               </div>

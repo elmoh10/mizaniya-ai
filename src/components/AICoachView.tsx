@@ -23,6 +23,9 @@ import {
   Sparkles,
   User as LucideUser,
   Database,
+  TrendingDown,
+  Gauge,
+  TriangleAlert,
 } from 'lucide-react';
 
 interface AICoachViewProps {
@@ -39,13 +42,23 @@ export const AICoachView: React.FC<AICoachViewProps> = ({ lang, user }) => {
   const [inputText, setInputText] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [showMemoryModal, setShowMemoryModal] = useState(false);
+  const [smartBriefing, setSmartBriefing] = useState<any>(null);
+
+  useEffect(() => {
+    if (!user) return;
+    let active = true;
+    apiClient.get('/smart-insights').then((res:any) => { if (active && res?.success) setSmartBriefing(res.data || null); }).catch(() => {});
+    return () => { active = false; };
+  }, [user]);
 
   // Suggested Prompts
   const suggestedPrompts = [
     isAr ? 'هل أقدر أشتري لاب توب الشهر ده بقسط أو كاش؟' : 'Can I buy a laptop this month?',
     isAr ? 'ازاي أوفر 2,000 جنيه من مصاريف السوبرماركت؟' : 'How to save 2000 EGP on groceries?',
     isAr ? 'ايه أسرع طريقة للتخلص من الديون المتبقية؟' : 'Fastest way to clear remaining debt?',
-    isAr ? 'سيموليشن: لو التضخم زاد 15% الميزانية تتأثر ازاي؟' : 'Simulation: What if inflation rises 15%?',
+    smartBriefing?.projectedMonthEndBalance < 0
+      ? (isAr ? 'اعمل لي خطة عملية أتجنب بيها العجز المتوقع قبل آخر الشهر' : 'Give me a plan to avoid the projected month-end deficit')
+      : (isAr ? 'إزاي أستفيد من الفائض المتوقع من غير ما أضغط ميزانيتي؟' : 'How should I use my projected surplus safely?'),
   ];
 
   const currentAgentObj = AGENT_CONFIG[activeAgent];
@@ -328,6 +341,29 @@ export const AICoachView: React.FC<AICoachViewProps> = ({ lang, user }) => {
           })}
         </div>
       </div>
+
+      {smartBriefing && (
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 shrink-0">
+          <button onClick={() => handleSendMessage(isAr ? 'حلل لي معدل الصرف الحالي واديني 3 خطوات عملية للأسبوع الجاي' : 'Analyze my burn rate and give me 3 actions for next week')} className="p-3 rounded-2xl bg-cyan-50 dark:bg-cyan-950/30 border border-cyan-200 dark:border-cyan-900 text-start hover:shadow-sm transition">
+            <Gauge className="w-4 h-4 text-cyan-600 mb-1" />
+            <p className="text-[10px] text-slate-500">{isAr ? 'الصرف اليومي' : 'Daily burn'}</p>
+            <p className="font-black text-sm text-slate-900 dark:text-white">{Number(smartBriefing.dailyBurn || 0).toFixed(0)} ج.م</p>
+            <p className="text-[10px] text-cyan-700">{isAr ? `الآمن ${Number(smartBriefing.safeDaily || 0).toFixed(0)} ج.م` : `Safe ${Number(smartBriefing.safeDaily || 0).toFixed(0)} EGP`}</p>
+          </button>
+          <button onClick={() => handleSendMessage(isAr ? 'فسر لي توقع نهاية الشهر وإيه أهم سبب للنتيجة دي' : 'Explain my month-end forecast and its main driver')} className="p-3 rounded-2xl bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900 text-start hover:shadow-sm transition">
+            <TrendingDown className="w-4 h-4 text-amber-600 mb-1" />
+            <p className="text-[10px] text-slate-500">{isAr ? 'توقع نهاية الشهر' : 'Month-end forecast'}</p>
+            <p className="font-black text-sm text-slate-900 dark:text-white">{Number(smartBriefing.projectedMonthEndBalance || 0).toFixed(0)} ج.م</p>
+            <p className="text-[10px] text-amber-700">{smartBriefing.risk || 'LOW'}</p>
+          </button>
+          <button onClick={() => handleSendMessage(isAr ? 'راجع المصروفات غير المعتادة وقولي أراجع أنهي عمليات الأول' : 'Review unusual expenses and tell me which transactions to inspect first')} className="p-3 rounded-2xl bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-900 text-start hover:shadow-sm transition">
+            <TriangleAlert className="w-4 h-4 text-rose-600 mb-1" />
+            <p className="text-[10px] text-slate-500">{isAr ? 'عمليات غير معتادة' : 'Anomalies'}</p>
+            <p className="font-black text-sm text-slate-900 dark:text-white">{smartBriefing.anomalies?.length || 0}</p>
+            <p className="text-[10px] text-rose-700 truncate">{smartBriefing.topCategory?.category || (isAr ? 'لا يوجد' : 'None')}</p>
+          </button>
+        </div>
+      )}
 
       {/* Messages Chat Box */}
       {messagesLoading ? (

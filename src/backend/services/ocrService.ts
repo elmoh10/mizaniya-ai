@@ -6,8 +6,14 @@ export interface ParsedReceiptData {
   merchantName?: string;
   totalAmount?: number;
   category?: string;
-  items?: { name: string; price: number }[];
+  items?: { name: string; quantity?: number; unitPrice?: number; price: number }[];
   date?: string;
+  subtotal?: number;
+  taxAmount?: number;
+  discountAmount?: number;
+  currency?: string;
+  paymentMethod?: string;
+  receiptNumber?: string;
   confidenceScore?: number;
   requiresConfirmation?: boolean;
   requiresManualEntry?: boolean;
@@ -80,7 +86,13 @@ export async function parseReceiptImageWithGemini(
 - اسم المحل/التاجر
 - المبلغ الإجمالي (جنيه مصري EGP)
 - التاريخ
-- المنتجات والمشتريات
+- المنتجات والمشتريات، ولكل منتج: الاسم، الكمية إن وجدت، سعر الوحدة إن وجد، وإجمالي سعر السطر
+- الإجمالي قبل الضريبة/الخصم إن كان ظاهرًا
+- قيمة الضريبة إن كانت ظاهرة
+- قيمة الخصم إن كانت ظاهرة
+- رقم الفاتورة/الإيصال إن كان ظاهرًا
+- وسيلة الدفع إن كانت ظاهرة (Cash, InstaPay, Vodafone Cash, Visa/Mastercard, Fawry)
+- العملة، والافتراضي EGP إذا كانت الفاتورة مصرية
 - تصنيف المعاملة (Food & Groceries, Housing & Utilities, Installments & Debt, Transport & Ride Apps, Shopping & Entertainment, Emergency & Savings)
 - نسبة الثقة (من 0 إلى 1)
 `;
@@ -108,12 +120,20 @@ export async function parseReceiptImageWithGemini(
                 type: Type.OBJECT,
                 properties: {
                   name: { type: Type.STRING },
+                  quantity: { type: Type.NUMBER },
+                  unitPrice: { type: Type.NUMBER },
                   price: { type: Type.NUMBER },
                 },
                 required: ['name', 'price'],
               },
             },
             date: { type: Type.STRING },
+            subtotal: { type: Type.NUMBER },
+            taxAmount: { type: Type.NUMBER },
+            discountAmount: { type: Type.NUMBER },
+            currency: { type: Type.STRING },
+            paymentMethod: { type: Type.STRING },
+            receiptNumber: { type: Type.STRING },
             confidenceScore: { type: Type.NUMBER },
           },
           required: ['merchantName', 'totalAmount', 'category', 'date'],
@@ -132,6 +152,12 @@ export async function parseReceiptImageWithGemini(
         category: parsed.category,
         items: parsed.items || [],
         date: parsed.date,
+        subtotal: parsed.subtotal,
+        taxAmount: parsed.taxAmount,
+        discountAmount: parsed.discountAmount,
+        currency: parsed.currency || 'EGP',
+        paymentMethod: parsed.paymentMethod,
+        receiptNumber: parsed.receiptNumber,
         confidenceScore,
         requiresConfirmation: confidenceScore < 0.8,
       };
