@@ -397,7 +397,7 @@ export function App() {
               {activeTab === 'goals' && <GoalsView goals={goals} lang={lang} />}
 
               {activeTab === 'health' && (
-                <HealthScoreView healthScore={healthScore} challenges={challenges} lang={lang} />
+                <HealthScoreView healthScore={healthScore} challenges={challenges} smartInsights={smartInsights} lang={lang} />
               )}
 
               {activeTab === 'family' && <FamilyView lang={lang} enabled={featureFlags.familyWallet} />}

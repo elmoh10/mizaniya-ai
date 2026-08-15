@@ -13,12 +13,14 @@ interface HealthScoreViewProps {
   healthScore: HealthScoreBreakdown | null;
   lang: 'ar' | 'en';
   challenges?: Challenge[];
+  smartInsights?: any;
 }
 
 export const HealthScoreView: React.FC<HealthScoreViewProps> = ({
   healthScore,
   lang,
   challenges = [],
+  smartInsights,
 }) => {
   const isAr = lang === 'ar';
 
@@ -153,6 +155,25 @@ export const HealthScoreView: React.FC<HealthScoreViewProps> = ({
                 <span>{r}</span>
               </div>
             ))}
+          </div>
+        </div>
+      )}
+
+      {smartInsights && (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          <div className="p-5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 space-y-4">
+            <h3 className="font-bold text-base text-slate-900 dark:text-white">{isAr ? 'ذكاء الإنفاق الاستباقي' : 'Proactive Spending Intelligence'}</h3>
+            <div className="grid grid-cols-2 gap-3 text-xs">
+              <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800"><div className="text-slate-500">{isAr ? 'المتاح الآمن يوميًا' : 'Safe daily spend'}</div><div className="font-black text-emerald-500 mt-1">{Number(smartInsights.safeDaily || 0).toLocaleString()} ج.م</div></div>
+              <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800"><div className="text-slate-500">{isAr ? 'أيام السيولة' : 'Cash runway'}</div><div className="font-black text-cyan-500 mt-1">{smartInsights.runwayDays ?? '—'} {isAr ? 'يوم' : 'days'}</div></div>
+              <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800"><div className="text-slate-500">{isAr ? 'مقارنة بالشهر السابق' : 'vs previous month'}</div><div className={`font-black mt-1 ${Number(smartInsights.monthChangePercent || 0) > 0 ? 'text-rose-500' : 'text-emerald-500'}`}>{smartInsights.monthChangePercent == null ? '—' : `${smartInsights.monthChangePercent > 0 ? '+' : ''}${smartInsights.monthChangePercent}%`}</div></div>
+              <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800"><div className="text-slate-500">{isAr ? 'عجز السيولة المتوقع' : 'Cash crunch date'}</div><div className="font-black text-amber-500 mt-1">{smartInsights.estimatedCashCrunchDate || (isAr ? 'غير متوقع' : 'Not expected')}</div></div>
+            </div>
+            {(smartInsights.recommendations || []).slice(0,4).map((r:string,i:number)=><div key={i} className="text-xs text-slate-600 dark:text-slate-300 flex gap-2"><span className="text-emerald-500 font-black">{i+1}.</span><span>{r}</span></div>)}
+          </div>
+          <div className="p-5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 space-y-3">
+            <h3 className="font-bold text-base text-slate-900 dark:text-white">{isAr ? 'المصروفات غير المعتادة' : 'Spending Anomalies'}</h3>
+            {(smartInsights.anomalies || []).length === 0 ? <div className="text-xs text-slate-500 p-4 text-center">{isAr ? 'لم يتم اكتشاف مصروفات غير معتادة هذا الشهر.' : 'No unusual spending detected this month.'}</div> : (smartInsights.anomalies || []).map((a:any)=><div key={a.id} className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/20"><div className="flex justify-between gap-2 text-xs font-bold"><span>{a.title}</span><span className="text-amber-500">{Number(a.amount).toLocaleString()} ج.م</span></div><div className="text-[11px] text-slate-500 mt-1">{isAr ? a.reasonAr : a.reason}</div></div>)}
           </div>
         </div>
       )}

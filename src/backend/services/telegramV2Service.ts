@@ -901,6 +901,27 @@ async function handleReadQueries(input: HandlerInput): Promise<HandlerResult> {
   const { userId, chatId, text, sendMessage } = input;
   const n = normalizeArabicText(text);
 
+  if (/ايه اللي بوظ الميزانيه|ايه اللي بوظ الميزانية|مصروفات غريبه|مصروفات غريبة|صرف غير معتاد|قارن بالشهر اللي فات/.test(n)) {
+    const x = await buildSmartFinancialInsights(userId);
+    const anomalyText = x.anomalies.length
+      ? x.anomalies.map((a:any,i:number)=>`${i+1}. ${a.title} — ${formatMoney(a.amount)} ج.م\n${a.reasonAr}`).join('\n\n')
+      : 'لم يتم اكتشاف عمليات شاذة إحصائيًا هذا الشهر.';
+    const comparison = x.monthChangePercent == null ? 'لا توجد بيانات كافية للشهر السابق.' : `مصروفاتك ${x.monthChangePercent >= 0 ? 'أعلى' : 'أقل'} ${Math.abs(x.monthChangePercent)}% من الشهر السابق.`;
+    await sendMessage(chatId, `🧠 تحليل نمط الإنفاق:\n\n${comparison}\n\n⚠️ العمليات غير المعتادة:\n${anomalyText}\n\n💡 ${x.recommendations.slice(0,3).join('\n💡 ')}`);
+    return { handled:true };
+  }
+
+  if (/اقدر اشتري|ينفع اشتري|اقدر ادفع|هل اقدر اشتري/.test(n)) {
+    const amount = parseAmount(text);
+    if (!amount) { await sendMessage(chatId, 'اكتب قيمة الحاجة اللي عايز تشتريها، مثال: أقدر أشتري حاجة بـ 3000 جنيه؟'); return {handled:true}; }
+    const x = await buildSmartFinancialInsights(userId);
+    const affordable = amount <= x.safeToSpend && (x.projectedMonthEndBalance - amount) >= 0;
+    await sendMessage(chatId, affordable
+      ? `✅ الشراء بقيمة ${formatMoney(amount)} ج.م داخل الحد الآمن حاليًا.\n\nالمتاح الآمن قبل الشراء: ${formatMoney(x.safeToSpend)} ج.م\nالمتبقي من الحد الآمن: ${formatMoney(Math.max(0,x.safeToSpend-amount))} ج.م.`
+      : `⚠️ الشراء بقيمة ${formatMoney(amount)} ج.م غير آمن حسب وضعك الحالي.\n\nالمتاح الآمن: ${formatMoney(x.safeToSpend)} ج.م\nتوقع نهاية الشهر قبل الشراء: ${formatMoney(x.projectedMonthEndBalance)} ج.م.\n\nالأفضل تأجيل الشراء أو تقليل قيمته.`);
+    return {handled:true};
+  }
+
   if (/صحتي الماليه|الصحه الماليه|financial health|درجتي الماليه|تقييمي المالي/.test(n)) {
     const insights = await buildSmartFinancialInsights(userId);
     const context:any = await getTrustedFinancialContext(userId);
